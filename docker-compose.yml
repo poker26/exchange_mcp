@@ -1,0 +1,15 @@
+services:
+  exchange-mcp:
+    build: .
+    container_name: exchange-mcp
+    restart: unless-stopped
+    env_file: .env
+    network_mode: host
+    volumes:
+      - /etc/resolv.conf:/etc/resolv.conf:ro
+      - ./state:/app/state
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
