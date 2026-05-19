@@ -18,6 +18,9 @@ class Settings(BaseSettings):
     ews_url: str = ""
     ssl_verify: str | bool = "false"
 
+    # EWS tuning
+    ews_folders_cache_ttl: float = 300.0
+
     # State
     state_dir: str = "/app/state"
 

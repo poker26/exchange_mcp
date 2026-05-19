@@ -8,11 +8,7 @@ from ..clients import router
 
 
 def _inbox_id_or_raise() -> str:
-    folders, _ = router.list_folders()
-    for f in folders:
-        if f.type == 2:  # Inbox
-            return f.id
-    raise BackendError("Inbox folder not found")
+    return router.ews.inbox_folder_id()
 
 
 def exchange_get_new_emails(

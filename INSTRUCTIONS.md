@@ -55,6 +55,14 @@ docker compose logs -f exchange-mcp
 curl -s http://127.0.0.1:8903/health
 ```
 
+## Backoff в логах (`Server requested back off`)
+
+Exchange ограничивает частоту запросов. `exchangelib` ждёт и повторяет — в логах `Sleeping N seconds`, ответ MCP при этом может идти **десятки секунд**.
+
+С v0.2.1: один поток EWS-запросов, кэш папок, Inbox без полного `list_folders`, меньше полей в выборке писем.
+
+Если backoff на **каждый** вызов — подождите 5 минут без запросов, перезапустите сервер, не вызывайте `exchange_list_folders` перед каждым `exchange_get_new_emails`.
+
 ## Отладка
 
 | Симптом | Что проверить |
