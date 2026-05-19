@@ -65,10 +65,10 @@ def _to_ews_datetime(value: datetime) -> datetime:
 
 def _to_plain_utc_datetime(value: datetime) -> datetime:
     """Normalize EWSDateTime to aware stdlib UTC for state and JSON."""
-    from exchangelib.ewsdatetime import EWSDateTime, UTC as EWS_UTC  # type: ignore[import-not-found]
+    from exchangelib.ewsdatetime import EWSDateTime  # type: ignore[import-not-found]
 
     if isinstance(value, EWSDateTime):
-        value = value.astimezone(EWS_UTC)
+        return datetime.fromtimestamp(value.timestamp(), tz=timezone.utc)
     if value.tzinfo is None:
         return value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc)
