@@ -29,6 +29,7 @@ async def health() -> dict:
         "status": status_message,
         "version": __version__,
         "exchange_host": settings.exchange_host,
+        "exchange_email": settings.exchange_email,
         "ews_url": settings.ews_effective_url,
         "backend": "ews",
         "ews": ews_info,

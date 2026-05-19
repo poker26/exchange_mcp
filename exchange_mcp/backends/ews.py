@@ -16,7 +16,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from ..config import settings
-from .base import BackendError, FolderInfo, MailBackend, MailItem
+from .base import BackendError, CalendarItem, FolderInfo, MailBackend, MailItem
 
 logger = logging.getLogger(__name__)
 
@@ -141,7 +141,14 @@ class EWSBackend:
                     credentials=credentials,
                     retry_policy=FaultTolerance(max_wait=30),
                 )
-                email_address = settings.exchange_email or settings.exchange_user
+                email_address = (settings.exchange_email or "").strip()
+                if "@" not in email_address:
+                    raise BackendError(
+                        "EXCHANGE_EMAIL must be the mailbox SMTP address "
+                        "(e.g. oleg.pokrovskiy@inplatlabs.ru). "
+                        f"Current value: {email_address!r}. "
+                        "Do not use OFFICE\\user here — that belongs in EXCHANGE_USER only."
+                    )
                 account = Account(
                     primary_smtp_address=email_address,
                     config=configuration,
@@ -284,6 +291,49 @@ class EWSBackend:
 
         return self._run_serialized("get_item", _fetch)
 
+    def get_calendar_items(
+        self,
+        folder_id: Optional[str],
+        date_from: datetime,
+        date_to: datetime,
+        limit: int = 200,
+    ) -> list[CalendarItem]:
+        def _fetch() -> list[CalendarItem]:
+            account = self._account_or_raise()
+            if folder_id:
+                try:
+                    folder = account.root.get_folder(_folder_id_type()(id=folder_id))
+                except Exception as exc:
+                    raise BackendError(f"folder lookup failed: {exc}") from exc
+            else:
+                folder = account.calendar
+
+            field_names = [
+                "id",
+                "uid",
+                "subject",
+                "location",
+                "organizer",
+                "start",
+                "end",
+                "is_all_day",
+                "body",
+                "required_attendees",
+                "optional_attendees",
+            ]
+            query_set = (
+                folder.view(
+                    start=_to_ews_datetime(date_from),
+                    end=_to_ews_datetime(date_to),
+                )
+                .only(*field_names)
+            )
+            query_set = query_set[: max(1, min(limit, 500))]
+
+            return [self._to_calendar_item(event) for event in query_set]
+
+        return self._run_serialized("get_calendar_items", _fetch)
+
     def send_email(
         self,
         to: list[str],
@@ -347,4 +397,48 @@ class EWSBackend:
             has_attachments=bool(getattr(message, "has_attachments", False)),
             body=body_text,
             body_is_html=body_is_html,
+        )
+
+    @staticmethod
+    def _to_calendar_item(event) -> CalendarItem:
+        start_value = getattr(event, "start", None)
+        end_value = getattr(event, "end", None)
+        if start_value is not None:
+            start_value = _to_plain_utc_datetime(start_value)
+        if end_value is not None:
+            end_value = _to_plain_utc_datetime(end_value)
+
+        organizer = ""
+        if getattr(event, "organizer", None) is not None:
+            organizer = (
+                getattr(event.organizer, "email_address", "")
+                or getattr(event.organizer, "name", "")
+            )
+
+        attendees: list[str] = []
+        for attendee_field in ("required_attendees", "optional_attendees"):
+            for attendee in getattr(event, attendee_field, None) or []:
+                address = (
+                    getattr(attendee, "email_address", "")
+                    or getattr(attendee, "name", "")
+                )
+                if address:
+                    attendees.append(address)
+
+        body_text = ""
+        if getattr(event, "body", None):
+            body_text = str(event.body)
+
+        return CalendarItem(
+            backend="ews",
+            server_id=str(event.id),
+            uid=getattr(event, "uid", "") or "",
+            subject=getattr(event, "subject", "") or "",
+            location=getattr(event, "location", "") or "",
+            organizer=organizer,
+            start=start_value,
+            end=end_value,
+            all_day=bool(getattr(event, "is_all_day", False)),
+            body=body_text,
+            attendees=attendees,
         )

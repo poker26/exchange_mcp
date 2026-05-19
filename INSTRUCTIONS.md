@@ -88,6 +88,7 @@ Exchange ограничивает частоту запросов. `exchangelib`
 
 | Симптом | Что проверить |
 |--------|----------------|
+| `ErrorNonExistentMailbox` | **`EXCHANGE_EMAIL`** — SMTP ящика на этом Exchange (например `oleg.pokrovskiy@inplatlabs.ru`), не `OFFICE\user` |
 | `down: Unauthorized` | `EXCHANGE_USER`, `EXCHANGE_PASSWORD` |
 | SSL / certificate | `SSL_VERIFY=false` или путь к CA |
 | timeout | DNS, firewall 443 до `mail.inplatlabs.ru` |
