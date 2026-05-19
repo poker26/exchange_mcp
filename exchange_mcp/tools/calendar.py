@@ -95,8 +95,25 @@ def exchange_create_event(
     }
 
 
+def exchange_respond_to_event(event_id: str, response: str) -> dict:
+    """Accept, decline, or tentatively accept a meeting invitation.
+
+    Args:
+        event_id: calendar item id from `exchange_get_calendar`.
+        response: one of accept, decline, tentative.
+    """
+    event, backend = router.respond_to_event(event_id, response)
+    return {
+        "backend": backend,
+        "response": response.strip().lower(),
+        "status": "sent",
+        "event": event.to_dict(),
+    }
+
+
 TOOLS = [
     exchange_get_calendar,
     exchange_get_new_events,
     exchange_create_event,
+    exchange_respond_to_event,
 ]

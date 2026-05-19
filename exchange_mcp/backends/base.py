@@ -111,6 +111,24 @@ class ContactItem:
 
 
 @dataclass
+class AttachmentInfo:
+    attachment_id: str
+    name: str
+    content_type: str
+    size: int
+    is_inline: bool = False
+
+    def to_dict(self) -> dict:
+        return {
+            "attachment_id": self.attachment_id,
+            "name": self.name,
+            "content_type": self.content_type,
+            "size": self.size,
+            "is_inline": self.is_inline,
+        }
+
+
+@dataclass
 class AttachmentData:
     backend: str
     item_id: str

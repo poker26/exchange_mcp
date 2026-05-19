@@ -19,6 +19,7 @@ from typing import Callable, Optional, TypeVar
 
 from .backends.base import (
     AttachmentData,
+    AttachmentInfo,
     BackendError,
     CalendarItem,
     ContactItem,
@@ -226,16 +227,93 @@ class MailRouter:
         item, _backend = self._execute("create_calendar_event", _create)
         return item, "ews"
 
+    def get_email(self, item_id: str) -> tuple[MailItem, str]:
+        def _fetch(ews: EWSBackend) -> MailItem:
+            return ews.get_email_by_id(item_id)
+
+        item, _backend = self._execute("get_email", _fetch)
+        return item, "ews"
+
+    def mark_email_read(self, item_id: str, is_read: bool) -> str:
+        def _update(ews: EWSBackend) -> None:
+            ews.mark_email_read(item_id, is_read)
+
+        self._execute("mark_email_read", _update)
+        return "ews"
+
+    def delete_email(self, item_id: str) -> str:
+        def _delete(ews: EWSBackend) -> None:
+            ews.delete_email(item_id)
+
+        self._execute("delete_email", _delete)
+        return "ews"
+
+    def move_email(self, item_id: str, target_folder_id: str) -> str:
+        def _move(ews: EWSBackend) -> None:
+            ews.move_email(item_id, target_folder_id)
+
+        self._execute("move_email", _move)
+        return "ews"
+
+    def reply_email(
+        self,
+        item_id: str,
+        body: str,
+        reply_all: bool = False,
+        body_is_html: bool = False,
+    ) -> str:
+        def _reply(ews: EWSBackend) -> None:
+            ews.reply_email(
+                item_id, body, reply_all=reply_all, body_is_html=body_is_html,
+            )
+
+        self._execute("reply_email", _reply)
+        return "ews"
+
+    def forward_email(
+        self,
+        item_id: str,
+        to: list[str],
+        body: str = "",
+        cc: Optional[list[str]] = None,
+        body_is_html: bool = False,
+    ) -> str:
+        def _forward(ews: EWSBackend) -> None:
+            ews.forward_email(
+                item_id, to, body=body, cc=cc, body_is_html=body_is_html,
+            )
+
+        self._execute("forward_email", _forward)
+        return "ews"
+
     def search_emails(
         self,
         query: str,
         limit: int = 20,
+        folder_id: Optional[str] = None,
+        search_body: bool = False,
     ) -> tuple[list[MailItem], str]:
         def _search(ews: EWSBackend) -> list[MailItem]:
-            return ews.search_emails(query, limit=limit)
+            return ews.search_emails(
+                query, limit=limit, folder_id=folder_id, search_body=search_body,
+            )
 
         items, _backend = self._execute("search_emails", _search)
         return items, "ews"
+
+    def list_attachments(self, item_id: str) -> tuple[list[AttachmentInfo], str]:
+        def _list(ews: EWSBackend) -> list[AttachmentInfo]:
+            return ews.list_attachments(item_id)
+
+        items, _backend = self._execute("list_attachments", _list)
+        return items, "ews"
+
+    def respond_to_event(self, event_id: str, response: str) -> tuple[CalendarItem, str]:
+        def _respond(ews: EWSBackend) -> CalendarItem:
+            return ews.respond_to_event(event_id, response)
+
+        item, _backend = self._execute("respond_to_event", _respond)
+        return item, "ews"
 
     def get_contacts(
         self,

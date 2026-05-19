@@ -20,6 +20,7 @@ from ..config import settings
 from ..datetime_util import parse_iso_datetime
 from .base import (
     AttachmentData,
+    AttachmentInfo,
     BackendError,
     CalendarItem,
     ContactItem,
@@ -305,13 +306,130 @@ class EWSBackend:
         def _fetch() -> Optional[MailItem]:
             account = self._account_or_raise()
             try:
-                item = account.root.get_item(_item_id_type()(id=server_id))
+                item = self._get_message_item(account, server_id)
                 return self._to_mail_item(item, include_body=True)
             except Exception as exc:
                 logger.warning("EWS get_item(%s) failed: %s", server_id, exc)
                 return None
 
         return self._run_serialized("get_item", _fetch)
+
+    def get_email_by_id(self, item_id: str) -> MailItem:
+        def _fetch() -> MailItem:
+            account = self._account_or_raise()
+            item = self._get_message_item(account, item_id)
+            return self._to_mail_item(item, include_body=True)
+
+        return self._run_serialized("get_email_by_id", _fetch)
+
+    def mark_email_read(self, item_id: str, is_read: bool) -> None:
+        def _update() -> None:
+            account = self._account_or_raise()
+            item = self._get_message_item(account, item_id)
+            item.is_read = is_read
+            item.save(update_fields=["is_read"])
+
+        self._run_serialized("mark_email_read", _update)
+
+    def delete_email(self, item_id: str) -> None:
+        def _delete() -> None:
+            account = self._account_or_raise()
+            item = self._get_message_item(account, item_id)
+            if hasattr(item, "move_to_trash"):
+                item.move_to_trash()
+            else:
+                item.move(account.trash)  # type: ignore[attr-defined]
+
+        self._run_serialized("delete_email", _delete)
+
+    def move_email(self, item_id: str, target_folder_id: str) -> None:
+        def _move() -> None:
+            account = self._account_or_raise()
+            item = self._get_message_item(account, item_id)
+            target_folder = account.root.get_folder(
+                _folder_id_type()(id=target_folder_id),
+            )
+            item.move(target_folder)
+
+        self._run_serialized("move_email", _move)
+
+    def reply_email(
+        self,
+        item_id: str,
+        body: str,
+        reply_all: bool = False,
+        body_is_html: bool = False,
+    ) -> None:
+        def _reply() -> None:
+            from exchangelib import HTMLBody  # type: ignore[import-not-found]
+
+            account = self._account_or_raise()
+            item = self._get_message_item(account, item_id)
+            message_body = HTMLBody(body) if body_is_html else body
+            if reply_all:
+                item.reply_all(body=message_body)
+            else:
+                item.reply(body=message_body)
+
+        self._run_serialized("reply_email", _reply)
+
+    def forward_email(
+        self,
+        item_id: str,
+        to: list[str],
+        body: str = "",
+        cc: Optional[list[str]] = None,
+        body_is_html: bool = False,
+    ) -> None:
+        def _forward() -> None:
+            from exchangelib import HTMLBody, Mailbox  # type: ignore[import-not-found]
+
+            account = self._account_or_raise()
+            item = self._get_message_item(account, item_id)
+            message_body = HTMLBody(body) if body_is_html else body
+            item.forward(
+                subject=f"FW: {getattr(item, 'subject', '')}",
+                body=message_body,
+                to_recipients=[Mailbox(email_address=address) for address in to],
+                cc_recipients=[
+                    Mailbox(email_address=address) for address in (cc or [])
+                ],
+            )
+
+        self._run_serialized("forward_email", _forward)
+
+    def list_attachments(self, item_id: str) -> list[AttachmentInfo]:
+        def _list() -> list[AttachmentInfo]:
+            account = self._account_or_raise()
+            item = account.root.get_item(_item_id_type()(id=item_id))
+            if not getattr(item, "attachments", None):
+                return []
+            item.refresh()
+            return [
+                self._to_attachment_info(attachment)
+                for attachment in (item.attachments or [])
+            ]
+
+        return self._run_serialized("list_attachments", _list)
+
+    def respond_to_event(self, event_id: str, response: str) -> CalendarItem:
+        def _respond() -> CalendarItem:
+            account = self._account_or_raise()
+            item = account.root.get_item(_item_id_type()(id=event_id))
+            response_normalized = response.strip().lower()
+            if response_normalized == "accept":
+                item.accept(send_response=True)
+            elif response_normalized == "decline":
+                item.decline(send_response=True)
+            elif response_normalized in ("tentative", "tentatively"):
+                item.tentatively_accept(send_response=True)
+            else:
+                raise BackendError(
+                    "response must be accept, decline, or tentative",
+                )
+            return self._to_calendar_item(item)
+
+        return self._run_serialized("respond_to_event", _respond)
 
     def get_calendar_items(
         self,
@@ -433,6 +551,7 @@ class EWSBackend:
         query: str,
         limit: int = 20,
         folder_id: Optional[str] = None,
+        search_body: bool = False,
     ) -> list[MailItem]:
         def _search() -> list[MailItem]:
             from exchangelib import Q  # type: ignore[import-not-found]
@@ -451,6 +570,8 @@ class EWSBackend:
                 Q(subject__icontains=search_text)
                 | Q(sender__icontains=search_text)
             )
+            if search_body:
+                filter_query = filter_query | Q(body__icontains=search_text)
             field_names = [
                 "id",
                 "message_id",
@@ -512,11 +633,7 @@ class EWSBackend:
                 raise BackendError("item has no attachments")
 
             for attachment in item.attachments:
-                candidate_ids = {
-                    str(getattr(attachment, "attachment_id", "") or ""),
-                    str(getattr(getattr(attachment, "attachment_id", None), "id", "") or ""),
-                    str(getattr(attachment, "id", "") or ""),
-                }
+                candidate_ids = {self._attachment_id(attachment)}
                 if attachment_id not in candidate_ids:
                     continue
 
@@ -567,6 +684,33 @@ class EWSBackend:
             message.send()
 
         self._run_serialized("send_email", _send)
+
+    @staticmethod
+    def _get_message_item(account, item_id: str):
+        item = account.root.get_item(_item_id_type()(id=item_id))
+        if not hasattr(item, "reply"):
+            raise BackendError(f"item {item_id!r} is not an email message")
+        return item
+
+    @staticmethod
+    def _attachment_id(attachment) -> str:
+        return (
+            str(getattr(attachment, "attachment_id", "") or "")
+            or str(getattr(getattr(attachment, "attachment_id", None), "id", "") or "")
+            or str(getattr(attachment, "id", "") or "")
+        )
+
+    @classmethod
+    def _to_attachment_info(cls, attachment) -> AttachmentInfo:
+        content = getattr(attachment, "content", None)
+        size = len(content) if content is not None else int(getattr(attachment, "size", 0) or 0)
+        return AttachmentInfo(
+            attachment_id=cls._attachment_id(attachment),
+            name=getattr(attachment, "name", "") or "attachment",
+            content_type=getattr(attachment, "content_type", "") or "application/octet-stream",
+            size=size,
+            is_inline=bool(getattr(attachment, "is_inline", False)),
+        )
 
     @staticmethod
     def _to_mail_item(message, *, include_body: bool) -> MailItem:
