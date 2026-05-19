@@ -20,4 +20,4 @@ EXPOSE 8903
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
   CMD curl -fsS http://127.0.0.1:8903/health || exit 1
 
-CMD ["python", "-m", "exchange_mcp.main"]
+CMD ["python", "-m", "exchange_mcp"]

@@ -46,10 +46,12 @@ exchange_mcp/
 
 ```bash
 cp .env.example .env
-# fill in EXCHANGE_USER, EXCHANGE_PASSWORD, MCP_API_KEY
-docker compose up -d
+# fill in EXCHANGE_PASSWORD, MCP_API_KEY (openssl rand -hex 32)
+docker compose up -d --build
 curl http://127.0.0.1:8903/health
 ```
+
+Подробнее: **`INSTRUCTIONS.md`** (развёртывание на Debian, отладка `/health`, Cursor/n8n).
 
 Endpoints:
 
