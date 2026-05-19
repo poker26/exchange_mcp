@@ -6,6 +6,27 @@ MCP-сервер для почты Exchange через **EWS** только. П�
 
 `C:\Users\hippo\exchange_mcp` — https://github.com/poker26/exchange_mcp
 
+Быстрая проверка EWS без запуска HTTP-сервера:
+
+```powershell
+cd C:\Users\hippo\exchange_mcp
+$env:PYTHONPATH = "C:\Users\hippo\exchange_mcp"
+.venv\Scripts\python.exe scripts\check_ews.py
+```
+
+## Cursor (`~/.cursor/mcp.json`)
+
+Уже можно использовать (сервер на `127.0.0.1:8903`):
+
+```json
+"exchange_local": {
+  "url": "http://127.0.0.1:8903/mcp/",
+  "headers": { "X-API-Key": "<MCP_API_KEY из .env>" }
+}
+```
+
+После `git pull` перезапустите `python -m exchange_mcp` и **Reload MCP** в Cursor.
+
 ## Перед запуском
 
 1. В `.env` задайте **`EXCHANGE_PASSWORD`**.
