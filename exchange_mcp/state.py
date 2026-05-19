@@ -1,13 +1,10 @@
-"""Persistent state shared across EWS and EAS channels.
+"""Persistent state for EWS incremental mail (cursor + dedup).
 
 Contract:
     per-folder cursor: last_seen_received_datetime (UTC, ISO-8601)
     per-folder dedup:  bounded set of Message-IDs (RFC 5322)
 
-Both channels update the same state. When channel switches happen, the
-cursor prevents misses (queries overlap in time by a safety margin) and
-the Message-ID set prevents duplicates. Persistence is atomic: a crash
-mid-write leaves the previous file intact.
+Persistence is atomic: a crash mid-write leaves the previous file intact.
 """
 from __future__ import annotations
 

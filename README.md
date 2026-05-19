@@ -1,16 +1,10 @@
-# Exchange MCP (hybrid EWS + EAS)
+# Exchange MCP (EWS)
 
-MCP server that talks to an on-premise Exchange mailbox via **two
-independent channels** with automatic mutual fallback:
+MCP server for an on-premise Exchange mailbox via **EWS** (Exchange Web
+Services, HTTPS). No ActiveSync fallback.
 
-- **EWS** (SOAP over HTTPS, via VPN) — primary channel when the VPN is up
-- **EAS** (ActiveSync, direct from internet) — fallback when the VPN is down
-
-A single process exposes the usual `exchange_*` MCP tools. Clients
-(n8n, Claude) see a stable contract and don't know which channel served
-the request. State (per-folder cursors + Message-ID LRU for dedup) is
-shared between the two channels, so channel switches never lose or
-duplicate mail.
+Clients (n8n, Claude) use `exchange_*` tools. Incremental mail uses a
+per-folder timestamp cursor and Message-ID LRU for deduplication.
 
 ## Layout
 
@@ -20,27 +14,21 @@ docker-compose.yml
 requirements.txt
 .env.example
 exchange_mcp/
-  config.py           # pydantic-settings
-  auth.py             # X-API-Key middleware
-  state.py            # AtomicJSONState + per-folder cursor + Message-ID LRU
+  config.py
+  auth.py
+  state.py
   backends/
-    base.py           # MailBackend protocol + DTO
-    ews.py            # exchangelib-based driver
-    eas.py            # wrapper around the patched eas_client.py
-  eas_client.py       # ported EAS WBXML client (with hardening fixes)
-  router.py           # MailRouter: preferred/fallback, healthcheck, dedup
+    base.py
+    ews.py
+  router.py           # MailRouter (EWS only)
   health.py           # GET /health
-  mcp_server.py       # FastMCP registration
-  rest_api.py         # /api/v1/* REST mirror
-  main.py             # FastAPI + FastMCP mount
+  mcp_server.py
+  main.py
   tools/
-    __init__.py       # ALL_TOOLS
-    folders.py
-    mail.py
-    calendar.py
-    contacts.py
-    attachments.py
 ```
+
+Legacy EAS code (`eas_client.py`, `backends/eas.py`) remains in the tree
+but is **not used**.
 
 ## Quick start
 
@@ -51,47 +39,26 @@ docker compose up -d --build
 curl http://127.0.0.1:8903/health
 ```
 
-Подробнее: **`INSTRUCTIONS.md`** (развёртывание на Debian, отладка `/health`, Cursor/n8n).
+Подробнее: **`INSTRUCTIONS.md`**.
 
 Endpoints:
 
-- `GET /health` — unauthenticated, shows both channels' status
-- `POST /mcp` — MCP transport (requires `X-API-Key` or `Authorization: Bearer ...`)
-- `GET /docs` — Swagger for the REST mirror
+- `GET /health` — EWS reachability (no auth)
+- `POST /mcp` — MCP transport (`X-API-Key` or `Authorization: Bearer …`)
 
-## Status
+## Status (v0.2)
 
-v0.1 skeleton. Working:
+Working:
 
-- `/health` with real EWS + EAS reachability checks
-- `exchange_list_folders` (EWS)
-- `exchange_get_new_emails` (router: EWS primary, EAS fallback, dedup by
-  `InternetMessageId`, per-folder timestamp cursor)
+- `/health` — EWS probe
+- `exchange_list_folders`
+- `exchange_get_new_emails` (cursor + Message-ID dedup)
+- `exchange_get_emails`, `exchange_send_email` (EWS)
 
-Stubs / TODO:
-
-- `exchange_get_emails` (non-incremental listing)
-- `exchange_get_calendar` / `exchange_get_new_events`
-- `exchange_get_contacts`
-- `exchange_search_emails`
-- `exchange_send_email`, `exchange_create_event`
-- `exchange_get_attachment`
-- REST mirror
-- Unit tests
+Stubs / TODO: calendar, contacts, search, attachments, REST mirror, tests.
 
 ## Design notes
 
-See the plan document that spawned this scaffold
-(`/root/.claude/plans/polymorphic-hugging-rabbit.md` in the session
-where this was generated). Key decisions:
-
-- State is tracked by **timestamp + Message-ID**, not by native
-  SyncKey / SyncState. That lets the two channels share one cursor
-  and survives SyncKey resets with zero data loss.
-- Preferred backend is decided per-request with a 60-second cached
-  healthcheck; a single failure flips preference until the next
-  healthcheck clears it.
-- EAS hardening (atomic state, retries, `reset_needed` on Status=3/12,
-  RLock, narrow excepts) lives in the ported `eas_client.py`. It was
-  originally committed on the `eas-mcp-server` repo, branch
-  `claude/analyze-email-detection-VU9rq`.
+- State: **timestamp cursor + Message-ID LRU**, not EWS SyncState.
+- EWS is reachable over HTTPS from the host running the container (VPN
+  no longer required for this deployment).

@@ -18,13 +18,6 @@ class Settings(BaseSettings):
     ews_url: str = ""
     ssl_verify: str | bool = "false"
 
-    # EAS-specific
-    eas_device_id: str = "EAS0LEGCLIENT0001"
-    eas_protocol: str = "14.1"
-
-    # Router
-    preferred_backend: str = "ews"
-
     # State
     state_dir: str = "/app/state"
 

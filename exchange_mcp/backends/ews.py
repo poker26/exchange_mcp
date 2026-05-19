@@ -1,8 +1,7 @@
 """EWS driver backed by exchangelib.
 
 Initialization is lazy so the process can start even if EWS is
-unreachable at boot (VPN down). healthcheck() is the canonical way to
-decide whether to route traffic here.
+unreachable at boot. healthcheck() is the canonical reachability probe.
 """
 from __future__ import annotations
 

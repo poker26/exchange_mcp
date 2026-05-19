@@ -29,9 +29,9 @@ def create_app() -> FastAPI:
         title="Exchange MCP",
         version=__version__,
         description=(
-            "Hybrid EWS + EAS MCP server with automatic fallback.\n\n"
+            "Exchange MCP server (EWS only).\n\n"
             "- `/mcp` — MCP streamable HTTP (send `X-API-Key` or `Authorization: Bearer <key>`).\n"
-            "- `/health` — unauthenticated liveness probe with per-channel status.\n"
+            "- `/health` — unauthenticated liveness probe with EWS status.\n"
         ),
         lifespan=mcp_app.lifespan,
     )
@@ -48,12 +48,11 @@ def create_app() -> FastAPI:
         )
 
     logger.info(
-        "exchange-mcp v%s starting on %s:%s, target=%s, preferred=%s",
+        "exchange-mcp v%s starting on %s:%s, ews=%s",
         __version__,
         settings.server_host,
         settings.server_port,
-        settings.exchange_host,
-        settings.preferred_backend,
+        settings.ews_effective_url,
     )
     return app
 
