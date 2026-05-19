@@ -92,9 +92,15 @@ def exchange_send_email(
 
 
 def exchange_search_emails(query: str, max_items: int = 20) -> dict:
-    """Search emails by subject/sender/content (NOT IMPLEMENTED in v0.1)."""
-    return {"error": "exchange_search_emails not implemented in v0.1",
-            "query": query, "max_items": max_items}
+    """Search emails by subject or sender in Inbox (EWS)."""
+    max_items = max(1, min(int(max_items), 100))
+    items, backend = router.search_emails(query, limit=max_items)
+    return {
+        "backend": backend,
+        "query": query,
+        "count": len(items),
+        "emails": [mail_item.to_dict() for mail_item in items],
+    }
 
 
 TOOLS = [

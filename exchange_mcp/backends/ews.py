@@ -9,6 +9,7 @@ backoff. Folder metadata is cached to avoid re-listing on every mail call.
 """
 from __future__ import annotations
 
+import base64
 import logging
 import threading
 import time
@@ -16,7 +17,16 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from ..config import settings
-from .base import BackendError, CalendarItem, FolderInfo, MailBackend, MailItem
+from ..datetime_util import parse_iso_datetime
+from .base import (
+    AttachmentData,
+    BackendError,
+    CalendarItem,
+    ContactItem,
+    FolderInfo,
+    MailBackend,
+    MailItem,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +44,7 @@ _EWS_FOLDER_TYPE = {
 }
 
 _DEFAULT_FOLDERS_CACHE_TTL = 300.0
+_MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024
 
 _ssl_adapter_configured = False
 
@@ -106,6 +117,7 @@ class EWSBackend:
         self._folders_cache: Optional[list[FolderInfo]] = None
         self._folders_cached_at: float = 0.0
         self._inbox_folder_id: Optional[str] = None
+        self._calendar_folder_id: Optional[str] = None
 
     def _run_serialized(self, operation_name: str, operation):
         with self._operation_lock:
@@ -193,6 +205,16 @@ class EWSBackend:
             return self._inbox_folder_id
 
         return self._run_serialized("inbox_folder_id", _resolve)
+
+    def calendar_folder_id(self) -> str:
+        def _resolve() -> str:
+            if self._calendar_folder_id:
+                return self._calendar_folder_id
+            account = self._account_or_raise()
+            self._calendar_folder_id = str(account.calendar.id)  # type: ignore[attr-defined]
+            return self._calendar_folder_id
+
+        return self._run_serialized("calendar_folder_id", _resolve)
 
     def list_folders(self) -> list[FolderInfo]:
         def _list() -> list[FolderInfo]:
@@ -316,6 +338,7 @@ class EWSBackend:
                 "organizer",
                 "start",
                 "end",
+                "last_modified_time",
                 "is_all_day",
                 "body",
                 "required_attendees",
@@ -333,6 +356,194 @@ class EWSBackend:
             return [self._to_calendar_item(event) for event in query_set]
 
         return self._run_serialized("get_calendar_items", _fetch)
+
+    def get_calendar_items_since(
+        self,
+        folder_id: Optional[str],
+        since: Optional[datetime],
+        limit: int = 50,
+    ) -> list[CalendarItem]:
+        now = datetime.now(timezone.utc)
+        if since is None:
+            date_from = now - timedelta(days=14)
+        else:
+            date_from = since - timedelta(minutes=5)
+        date_to = now + timedelta(days=365)
+        items = self.get_calendar_items(
+            folder_id, date_from, date_to, limit=max(limit * 3, 100),
+        )
+        if since is None:
+            return items[:limit]
+
+        filtered: list[CalendarItem] = []
+        for event in items:
+            event_time = event.last_modified or event.start
+            if event_time and event_time > since:
+                filtered.append(event)
+        filtered.sort(
+            key=lambda event: event.last_modified or event.start or now,
+            reverse=True,
+        )
+        return filtered[:limit]
+
+    def create_calendar_event(
+        self,
+        subject: str,
+        start: str,
+        end: str,
+        location: str = "",
+        body: str = "",
+        attendees: Optional[list[str]] = None,
+        folder_id: Optional[str] = None,
+    ) -> CalendarItem:
+        def _create() -> CalendarItem:
+            account = self._account_or_raise()
+            from exchangelib import Attendee, CalendarItem as EwsCalendarItem  # type: ignore[import-not-found]
+            from exchangelib import Mailbox  # type: ignore[import-not-found]
+
+            if folder_id:
+                folder = account.root.get_folder(_folder_id_type()(id=folder_id))
+            else:
+                folder = account.calendar
+
+            start_time = _to_ews_datetime(parse_iso_datetime(start))
+            end_time = _to_ews_datetime(parse_iso_datetime(end))
+            attendee_list = [
+                Attendee(mailbox=Mailbox(email_address=address))
+                for address in (attendees or [])
+                if address.strip()
+            ]
+            event = EwsCalendarItem(
+                account=account,
+                folder=folder,
+                subject=subject,
+                start=start_time,
+                end=end_time,
+                location=location,
+                body=body,
+                required_attendees=attendee_list,
+            )
+            event.save()
+            return self._to_calendar_item(event)
+
+        return self._run_serialized("create_calendar_event", _create)
+
+    def search_emails(
+        self,
+        query: str,
+        limit: int = 20,
+        folder_id: Optional[str] = None,
+    ) -> list[MailItem]:
+        def _search() -> list[MailItem]:
+            from exchangelib import Q  # type: ignore[import-not-found]
+
+            account = self._account_or_raise()
+            search_text = query.strip()
+            if not search_text:
+                return []
+
+            if folder_id:
+                folder = account.root.get_folder(_folder_id_type()(id=folder_id))
+            else:
+                folder = account.inbox
+
+            filter_query = (
+                Q(subject__icontains=search_text)
+                | Q(sender__icontains=search_text)
+            )
+            field_names = [
+                "id",
+                "message_id",
+                "subject",
+                "sender",
+                "to_recipients",
+                "datetime_received",
+                "is_read",
+                "has_attachments",
+            ]
+            query_set = (
+                folder.filter(filter_query)
+                .only(*field_names)
+                .order_by("-datetime_received")
+            )
+            query_set = query_set[: max(1, min(limit, 100))]
+            return [self._to_mail_item(message, include_body=False) for message in query_set]
+
+        return self._run_serialized("search_emails", _search)
+
+    def get_contacts(
+        self,
+        folder_id: Optional[str] = None,
+        limit: int = 50,
+    ) -> list[ContactItem]:
+        def _fetch() -> list[ContactItem]:
+            account = self._account_or_raise()
+            if folder_id:
+                folder = account.root.get_folder(_folder_id_type()(id=folder_id))
+            else:
+                folder = account.contacts
+
+            field_names = [
+                "id",
+                "display_name",
+                "email_addresses",
+                "phone_numbers",
+                "company_name",
+            ]
+            query_set = (
+                folder.all()
+                .only(*field_names)
+                .order_by("display_name")
+            )
+            query_set = query_set[: max(1, min(limit, 200))]
+            return [self._to_contact_item(contact) for contact in query_set]
+
+        return self._run_serialized("get_contacts", _fetch)
+
+    def get_attachment(
+        self,
+        item_id: str,
+        attachment_id: str,
+    ) -> AttachmentData:
+        def _fetch() -> AttachmentData:
+            account = self._account_or_raise()
+            item = account.root.get_item(_item_id_type()(id=item_id))
+            if not getattr(item, "attachments", None):
+                raise BackendError("item has no attachments")
+
+            for attachment in item.attachments:
+                candidate_ids = {
+                    str(getattr(attachment, "attachment_id", "") or ""),
+                    str(getattr(getattr(attachment, "attachment_id", None), "id", "") or ""),
+                    str(getattr(attachment, "id", "") or ""),
+                }
+                if attachment_id not in candidate_ids:
+                    continue
+
+                content = getattr(attachment, "content", None)
+                if content is None:
+                    raise BackendError("attachment has no inline content (may be embedded)")
+
+                raw_bytes = bytes(content)
+                if len(raw_bytes) > _MAX_ATTACHMENT_BYTES:
+                    raise BackendError(
+                        f"attachment too large ({len(raw_bytes)} bytes, "
+                        f"max {_MAX_ATTACHMENT_BYTES})",
+                    )
+
+                return AttachmentData(
+                    backend="ews",
+                    item_id=item_id,
+                    attachment_id=attachment_id,
+                    name=getattr(attachment, "name", "") or "attachment",
+                    content_type=getattr(attachment, "content_type", "") or "application/octet-stream",
+                    size=len(raw_bytes),
+                    content_base64=base64.b64encode(raw_bytes).decode("ascii"),
+                )
+
+            raise BackendError(f"attachment {attachment_id!r} not found on item")
+
+        return self._run_serialized("get_attachment", _fetch)
 
     def send_email(
         self,
@@ -429,6 +640,10 @@ class EWSBackend:
         if getattr(event, "body", None):
             body_text = str(event.body)
 
+        last_modified_value = getattr(event, "last_modified_time", None)
+        if last_modified_value is not None:
+            last_modified_value = _to_plain_utc_datetime(last_modified_value)
+
         return CalendarItem(
             backend="ews",
             server_id=str(event.id),
@@ -438,7 +653,35 @@ class EWSBackend:
             organizer=organizer,
             start=start_value,
             end=end_value,
+            last_modified=last_modified_value,
             all_day=bool(getattr(event, "is_all_day", False)),
             body=body_text,
             attendees=attendees,
+        )
+
+    @staticmethod
+    def _to_contact_item(contact) -> ContactItem:
+        email_address = ""
+        for entry in getattr(contact, "email_addresses", None) or []:
+            email_address = (
+                getattr(entry, "email", "")
+                or getattr(entry, "email_address", "")
+                or str(entry)
+            )
+            if email_address:
+                break
+
+        phone_number = ""
+        for entry in getattr(contact, "phone_numbers", None) or []:
+            phone_number = getattr(entry, "phone_number", "") or str(entry)
+            if phone_number:
+                break
+
+        return ContactItem(
+            backend="ews",
+            server_id=str(contact.id),
+            display_name=getattr(contact, "display_name", "") or "",
+            email=email_address,
+            phone=phone_number,
+            company=getattr(contact, "company_name", "") or "",
         )

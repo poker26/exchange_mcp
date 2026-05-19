@@ -46,16 +46,22 @@ Endpoints:
 - `GET /health` — EWS reachability (no auth)
 - `POST /mcp` — MCP transport (`X-API-Key` or `Authorization: Bearer …`)
 
-## Status (v0.2)
+## Status (v0.3)
 
-Working:
+Working (EWS):
 
 - `/health` — EWS probe
 - `exchange_list_folders`
-- `exchange_get_new_emails` (cursor + Message-ID dedup)
-- `exchange_get_emails`, `exchange_send_email` (EWS)
+- `exchange_get_new_emails`, `exchange_get_emails`, `exchange_send_email`
+- `exchange_search_emails` — subject/sender in Inbox
+- `exchange_get_calendar`, `exchange_get_new_events`, `exchange_create_event`
+- `exchange_get_contacts`
+- `exchange_get_attachment` — inline files up to 10 MB (base64)
 
-Stubs / TODO: calendar, contacts, search, attachments, REST mirror, tests.
+Possible future tools: mark read/unread, delete/move message, reply/forward,
+list attachment names without download, accept/decline meeting.
+
+TODO: REST mirror, automated tests.
 
 ## Design notes
 

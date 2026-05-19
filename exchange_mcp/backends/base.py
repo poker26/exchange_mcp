@@ -66,6 +66,7 @@ class CalendarItem:
     organizer: str = ""
     start: Optional[datetime] = None
     end: Optional[datetime] = None
+    last_modified: Optional[datetime] = None
     all_day: bool = False
     body: str = ""
     attendees: list = field(default_factory=list)
@@ -80,9 +81,54 @@ class CalendarItem:
             "organizer": self.organizer,
             "start": self.start.isoformat() if self.start else "",
             "end": self.end.isoformat() if self.end else "",
+            "last_modified": (
+                self.last_modified.isoformat() if self.last_modified else ""
+            ),
             "all_day": self.all_day,
             "body": self.body,
             "attendees": self.attendees,
+        }
+
+
+@dataclass
+class ContactItem:
+    backend: str
+    server_id: str
+    display_name: str = ""
+    email: str = ""
+    phone: str = ""
+    company: str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "backend": self.backend,
+            "id": self.server_id,
+            "display_name": self.display_name,
+            "email": self.email,
+            "phone": self.phone,
+            "company": self.company,
+        }
+
+
+@dataclass
+class AttachmentData:
+    backend: str
+    item_id: str
+    attachment_id: str
+    name: str
+    content_type: str
+    size: int
+    content_base64: str
+
+    def to_dict(self) -> dict:
+        return {
+            "backend": self.backend,
+            "item_id": self.item_id,
+            "attachment_id": self.attachment_id,
+            "name": self.name,
+            "content_type": self.content_type,
+            "size": self.size,
+            "content_base64": self.content_base64,
         }
 
 

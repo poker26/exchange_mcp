@@ -1,11 +1,19 @@
-"""Attachment tools — stub in v0.1."""
+"""Attachment tools."""
 from __future__ import annotations
+
+from ..clients import router
 
 
 def exchange_get_attachment(item_id: str, attachment_id: str) -> dict:
-    """Download an attachment by ID (NOT IMPLEMENTED in v0.1)."""
-    return {"error": "exchange_get_attachment not implemented in v0.1",
-            "item_id": item_id, "attachment_id": attachment_id}
+    """Download an attachment by message item id and attachment id (EWS).
+
+    Returns base64-encoded content (max 10 MB). Use ids from email list /
+    attachment metadata on the message.
+    """
+    data, backend = router.get_attachment(item_id, attachment_id)
+    result = data.to_dict()
+    result["backend"] = backend
+    return result
 
 
 TOOLS = [exchange_get_attachment]

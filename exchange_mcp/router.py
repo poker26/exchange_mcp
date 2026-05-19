@@ -17,7 +17,14 @@ import time
 from datetime import datetime, timedelta
 from typing import Callable, Optional, TypeVar
 
-from .backends.base import BackendError, FolderInfo, MailItem
+from .backends.base import (
+    AttachmentData,
+    BackendError,
+    CalendarItem,
+    ContactItem,
+    FolderInfo,
+    MailItem,
+)
 from .backends.ews import EWSBackend
 from .config import settings
 from .state import SharedState
@@ -140,6 +147,117 @@ class MailRouter:
 
         items, _backend = self._execute("get_emails", _fetch)
         return items, "ews"
+
+    def get_calendar(
+        self,
+        folder_id: Optional[str],
+        date_from: datetime,
+        date_to: datetime,
+        limit: int = 200,
+    ) -> tuple[list[CalendarItem], str]:
+        def _fetch(ews: EWSBackend) -> list[CalendarItem]:
+            return ews.get_calendar_items(
+                folder_id, date_from, date_to, limit=limit,
+            )
+
+        items, _backend = self._execute("get_calendar", _fetch)
+        return items, "ews"
+
+    def get_new_calendar(
+        self,
+        folder_id: Optional[str],
+        limit: int = 50,
+    ) -> tuple[list[CalendarItem], str, bool]:
+        def _resolve_folder(ews: EWSBackend) -> str:
+            return folder_id or ews.calendar_folder_id()
+
+        resolved_folder, _backend = self._execute(
+            "resolve_calendar_folder", _resolve_folder,
+        )
+        state_key = f"cal:{resolved_folder}"
+        cursor = self.state.get_cursor(state_key)
+        is_initial = cursor is None
+        since = (cursor - _SAFETY_MARGIN) if cursor else None
+
+        def _fetch(ews: EWSBackend) -> list[CalendarItem]:
+            return ews.get_calendar_items_since(folder_id, since, limit=limit)
+
+        items, _backend = self._execute("get_new_calendar", _fetch)
+
+        new_items: list[CalendarItem] = []
+        new_uids: list[str] = []
+        max_marker: Optional[datetime] = None
+        for event in items:
+            if event.uid and self.state.contains(state_key, event.uid):
+                continue
+            new_items.append(event)
+            if event.uid:
+                new_uids.append(event.uid)
+            marker = event.last_modified or event.start
+            if marker and (max_marker is None or marker > max_marker):
+                max_marker = marker
+
+        if max_marker is not None:
+            self.state.set_cursor(state_key, max_marker)
+        if new_uids:
+            self.state.mark_seen(state_key, new_uids)
+
+        return new_items, "ews", is_initial
+
+    def create_calendar_event(
+        self,
+        subject: str,
+        start: str,
+        end: str,
+        location: str = "",
+        body: str = "",
+        attendees: Optional[list[str]] = None,
+    ) -> tuple[CalendarItem, str]:
+        def _create(ews: EWSBackend) -> CalendarItem:
+            return ews.create_calendar_event(
+                subject=subject,
+                start=start,
+                end=end,
+                location=location,
+                body=body,
+                attendees=attendees,
+            )
+
+        item, _backend = self._execute("create_calendar_event", _create)
+        return item, "ews"
+
+    def search_emails(
+        self,
+        query: str,
+        limit: int = 20,
+    ) -> tuple[list[MailItem], str]:
+        def _search(ews: EWSBackend) -> list[MailItem]:
+            return ews.search_emails(query, limit=limit)
+
+        items, _backend = self._execute("search_emails", _search)
+        return items, "ews"
+
+    def get_contacts(
+        self,
+        folder_id: Optional[str],
+        limit: int = 50,
+    ) -> tuple[list[ContactItem], str]:
+        def _fetch(ews: EWSBackend) -> list[ContactItem]:
+            return ews.get_contacts(folder_id, limit=limit)
+
+        items, _backend = self._execute("get_contacts", _fetch)
+        return items, "ews"
+
+    def get_attachment(
+        self,
+        item_id: str,
+        attachment_id: str,
+    ) -> tuple[AttachmentData, str]:
+        def _fetch(ews: EWSBackend) -> AttachmentData:
+            return ews.get_attachment(item_id, attachment_id)
+
+        data, _backend = self._execute("get_attachment", _fetch)
+        return data, "ews"
 
     def send_email(
         self,
