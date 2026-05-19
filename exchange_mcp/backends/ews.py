@@ -35,6 +35,27 @@ _EWS_FOLDER_TYPE = {
 
 _DEFAULT_FOLDERS_CACHE_TTL = 300.0
 
+_ssl_adapter_configured = False
+
+
+def _configure_ssl_adapter() -> None:
+    """Map SSL_VERIFY to exchangelib 5.x HTTP adapter (Configuration has no verify=)."""
+    global _ssl_adapter_configured
+    if _ssl_adapter_configured:
+        return
+    import requests.adapters
+    from exchangelib.protocol import BaseProtocol, NoVerifyHTTPAdapter  # type: ignore[import-not-found]
+
+    verify_setting = settings.verify
+    if verify_setting is False:
+        BaseProtocol.HTTP_ADAPTER_CLS = NoVerifyHTTPAdapter
+        logger.info("EWS TLS verification disabled (SSL_VERIFY=false)")
+    else:
+        BaseProtocol.HTTP_ADAPTER_CLS = requests.adapters.HTTPAdapter
+        if isinstance(verify_setting, str):
+            logger.info("EWS TLS verification uses CA bundle: %s", verify_setting)
+    _ssl_adapter_configured = True
+
 
 class EWSBackend:
     name = "ews"
@@ -72,6 +93,7 @@ class EWSBackend:
                     FaultTolerance,
                 )
 
+                _configure_ssl_adapter()
                 credentials = Credentials(
                     username=settings.exchange_user,
                     password=settings.exchange_password,
@@ -79,7 +101,6 @@ class EWSBackend:
                 configuration = Configuration(
                     service_endpoint=settings.ews_effective_url,
                     credentials=credentials,
-                    verify=settings.verify,
                     retry_policy=FaultTolerance(max_wait=30),
                 )
                 email_address = settings.exchange_email or settings.exchange_user
