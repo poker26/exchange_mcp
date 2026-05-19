@@ -38,17 +38,55 @@ _DEFAULT_FOLDERS_CACHE_TTL = 300.0
 _ssl_adapter_configured = False
 
 
+def _folder_id_type():
+    try:
+        from exchangelib import FolderId  # type: ignore[import-not-found]
+    except ImportError:
+        from exchangelib.properties import FolderId  # type: ignore[import-not-found]
+    return FolderId
+
+
+def _item_id_type():
+    try:
+        from exchangelib import ItemId  # type: ignore[import-not-found]
+    except ImportError:
+        from exchangelib.properties import ItemId  # type: ignore[import-not-found]
+    return ItemId
+
+
+def _to_ews_datetime(value: datetime) -> datetime:
+    """Convert stdlib datetime to EWSDateTime for exchangelib filters."""
+    from exchangelib.ewsdatetime import EWSDateTime  # type: ignore[import-not-found]
+
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return EWSDateTime.from_datetime(value)
+
+
+def _to_plain_utc_datetime(value: datetime) -> datetime:
+    """Normalize EWSDateTime to aware stdlib UTC for state and JSON."""
+    from exchangelib.ewsdatetime import EWSDateTime, UTC as EWS_UTC  # type: ignore[import-not-found]
+
+    if isinstance(value, EWSDateTime):
+        value = value.astimezone(EWS_UTC)
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
 def _configure_ssl_adapter() -> None:
     """Map SSL_VERIFY to exchangelib 5.x HTTP adapter (Configuration has no verify=)."""
     global _ssl_adapter_configured
     if _ssl_adapter_configured:
         return
     import requests.adapters
+    import urllib3
     from exchangelib.protocol import BaseProtocol, NoVerifyHTTPAdapter  # type: ignore[import-not-found]
 
     verify_setting = settings.verify
     if verify_setting is False:
         BaseProtocol.HTTP_ADAPTER_CLS = NoVerifyHTTPAdapter
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
         logger.info("EWS TLS verification disabled (SSL_VERIFY=false)")
     else:
         BaseProtocol.HTTP_ADAPTER_CLS = requests.adapters.HTTPAdapter
@@ -198,8 +236,7 @@ class EWSBackend:
         def _fetch() -> list[MailItem]:
             account = self._account_or_raise()
             try:
-                from exchangelib import FolderId  # type: ignore[import-not-found]
-                folder = account.root.get_folder(FolderId(id=folder_id))
+                folder = account.root.get_folder(_folder_id_type()(id=folder_id))
             except Exception as exc:
                 raise BackendError(f"folder lookup failed: {exc}") from exc
 
@@ -223,7 +260,9 @@ class EWSBackend:
                 .order_by("-datetime_received")
             )
             if since is not None:
-                query_set = query_set.filter(datetime_received__gt=since)
+                query_set = query_set.filter(
+                    datetime_received__gt=_to_ews_datetime(since),
+                )
             query_set = query_set[: max(1, min(limit, 500))]
 
             return [
@@ -237,8 +276,7 @@ class EWSBackend:
         def _fetch() -> Optional[MailItem]:
             account = self._account_or_raise()
             try:
-                from exchangelib import ItemId  # type: ignore[import-not-found]
-                item = account.root.get_item(ItemId(id=server_id))
+                item = account.root.get_item(_item_id_type()(id=server_id))
                 return self._to_mail_item(item, include_body=True)
             except Exception as exc:
                 logger.warning("EWS get_item(%s) failed: %s", server_id, exc)
@@ -272,8 +310,8 @@ class EWSBackend:
     @staticmethod
     def _to_mail_item(message, *, include_body: bool) -> MailItem:
         received = getattr(message, "datetime_received", None)
-        if received and received.tzinfo is None:
-            received = received.replace(tzinfo=timezone.utc)
+        if received is not None:
+            received = _to_plain_utc_datetime(received)
 
         sender = ""
         if getattr(message, "sender", None) is not None:
