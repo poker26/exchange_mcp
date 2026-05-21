@@ -75,6 +75,14 @@ def _item_id_type():
     return ItemId
 
 
+def _fetch_item_by_id(account, item_id: str):
+    """Load any mailbox item by EWS id (exchangelib 5.x has no root.get_item)."""
+    fetched = list(account.fetch(ids=[_item_id_type()(id=item_id)]))
+    if not fetched:
+        raise BackendError(f"item {item_id!r} not found")
+    return fetched[0]
+
+
 def _to_ews_datetime(value: datetime) -> datetime:
     """Convert stdlib datetime to EWSDateTime for exchangelib filters."""
     from exchangelib.ewsdatetime import EWSDateTime  # type: ignore[import-not-found]
@@ -410,7 +418,7 @@ class EWSBackend:
     def list_attachments(self, item_id: str) -> list[AttachmentInfo]:
         def _list() -> list[AttachmentInfo]:
             account = self._account_or_raise()
-            item = account.root.get_item(_item_id_type()(id=item_id))
+            item = _fetch_item_by_id(account, item_id)
             if not getattr(item, "attachments", None):
                 return []
             item.refresh()
@@ -451,7 +459,12 @@ class EWSBackend:
 
             account = self._account_or_raise()
             try:
-                item = account.root.get_item(_item_id_type()(id=event_id))
+                item = _fetch_item_by_id(account, event_id)
+            except BackendError as exc:
+                raise CalendarUpdateError(
+                    "EVENT_NOT_FOUND",
+                    str(exc),
+                ) from exc
             except Exception as exc:
                 raise CalendarUpdateError(
                     "EVENT_NOT_FOUND",
@@ -541,7 +554,7 @@ class EWSBackend:
     def respond_to_event(self, event_id: str, response: str) -> CalendarItem:
         def _respond() -> CalendarItem:
             account = self._account_or_raise()
-            item = account.root.get_item(_item_id_type()(id=event_id))
+            item = _fetch_item_by_id(account, event_id)
             response_normalized = response.strip().lower()
             if response_normalized == "accept":
                 item.accept(send_response=True)
@@ -754,7 +767,7 @@ class EWSBackend:
     ) -> AttachmentData:
         def _fetch() -> AttachmentData:
             account = self._account_or_raise()
-            item = account.root.get_item(_item_id_type()(id=item_id))
+            item = _fetch_item_by_id(account, item_id)
             if not getattr(item, "attachments", None):
                 raise BackendError("item has no attachments")
 
@@ -813,7 +826,7 @@ class EWSBackend:
 
     @staticmethod
     def _get_message_item(account, item_id: str):
-        item = account.root.get_item(_item_id_type()(id=item_id))
+        item = _fetch_item_by_id(account, item_id)
         if not hasattr(item, "reply"):
             raise BackendError(f"item {item_id!r} is not an email message")
         return item
