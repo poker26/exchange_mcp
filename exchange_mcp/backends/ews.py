@@ -477,7 +477,7 @@ class EWSBackend:
                     f"item {event_id!r} is not a calendar event",
                 )
 
-            if getattr(item, "recurrence", None) or getattr(item, "is_recurring", False):
+            if getattr(item, "recurrence", None) is not None:
                 raise CalendarUpdateError(
                     "RECURRENCE_UNSUPPORTED",
                     "recurring events cannot be updated yet; edit in Outlook",
