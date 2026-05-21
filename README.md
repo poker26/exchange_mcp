@@ -51,8 +51,10 @@ Endpoints:
 Working (EWS):
 
 - Mail: list/new/get/search/send, mark read, delete, move, reply, forward
-- Calendar: get/new/create, respond (accept/decline/tentative)
+- Calendar: get/new/create/update, respond (accept/decline/tentative)
 - Contacts, folders, list/download attachments (10 MB cap)
+
+Calendar update: see `docs/rfc/0001-calendar-update-reschedule.md`.
 
 TODO: REST mirror, automated tests.
 

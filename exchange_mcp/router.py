@@ -22,6 +22,7 @@ from .backends.base import (
     AttachmentInfo,
     BackendError,
     CalendarItem,
+    CalendarUpdateError,
     ContactItem,
     FolderInfo,
     MailItem,
@@ -83,6 +84,8 @@ class MailRouter:
     ) -> tuple[ReturnType, EWSBackend]:
         try:
             return operation(self.ews), self.ews
+        except CalendarUpdateError:
+            raise
         except BackendError:
             self._mark_unhealthy()
             raise
@@ -313,6 +316,33 @@ class MailRouter:
             return ews.respond_to_event(event_id, response)
 
         item, _backend = self._execute("respond_to_event", _respond)
+        return item, "ews"
+
+    def update_calendar_event(
+        self,
+        event_id: str,
+        *,
+        start: Optional[str] = None,
+        end: Optional[str] = None,
+        subject: Optional[str] = None,
+        location: Optional[str] = None,
+        body: Optional[str] = None,
+        body_is_html: bool = False,
+        send_meeting_invitations: str = "to_all",
+    ) -> tuple[CalendarItem, str]:
+        def _update(ews: EWSBackend) -> CalendarItem:
+            return ews.update_calendar_event(
+                event_id,
+                start=start,
+                end=end,
+                subject=subject,
+                location=location,
+                body=body,
+                body_is_html=body_is_html,
+                send_meeting_invitations=send_meeting_invitations,
+            )
+
+        item, _backend = self._execute("update_calendar_event", _update)
         return item, "ews"
 
     def get_contacts(

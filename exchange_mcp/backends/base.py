@@ -159,6 +159,14 @@ class BackendError(Exception):
     """
 
 
+class CalendarUpdateError(Exception):
+    """Predictable calendar update failure with a stable machine code."""
+
+    def __init__(self, code: str, message: str) -> None:
+        self.code = code
+        super().__init__(message)
+
+
 @runtime_checkable
 class MailBackend(Protocol):
     name: str                  # "ews" or "eas"

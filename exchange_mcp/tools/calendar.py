@@ -4,6 +4,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
+from ..backends.base import CalendarUpdateError
 from ..clients import router
 from ..datetime_util import parse_iso_datetime
 
@@ -95,6 +96,52 @@ def exchange_create_event(
     }
 
 
+def exchange_update_event(
+    event_id: str,
+    start: str = "",
+    end: str = "",
+    subject: str = "",
+    location: str = "",
+    body: str = "",
+    body_is_html: bool = False,
+    send_meeting_invitations: str = "to_all",
+) -> dict:
+    """Update an existing calendar event (reschedule or edit metadata).
+
+    Args:
+        event_id: calendar item id from `exchange_get_calendar` or `exchange_create_event`.
+        start: new start in ISO 8601 (naive treated as UTC). Empty = leave unchanged.
+        end: new end in ISO 8601. Empty = leave unchanged.
+        subject: new title when non-empty; empty = leave unchanged.
+        location: new location when non-empty; empty = leave unchanged.
+        body: new body when non-empty; empty = leave unchanged (does not clear body).
+        body_is_html: use HTML body when `body` is updated.
+        send_meeting_invitations: `to_all` (default), `to_changed`, or `save_only`.
+    """
+    try:
+        event, backend = router.update_calendar_event(
+            event_id,
+            start=start or None,
+            end=end or None,
+            subject=subject or None,
+            location=location or None,
+            body=body or None,
+            body_is_html=body_is_html,
+            send_meeting_invitations=send_meeting_invitations,
+        )
+    except CalendarUpdateError as exc:
+        return {
+            "error": True,
+            "code": exc.code,
+            "message": str(exc),
+        }
+    return {
+        "backend": backend,
+        "status": "updated",
+        "event": event.to_dict(),
+    }
+
+
 def exchange_respond_to_event(event_id: str, response: str) -> dict:
     """Accept, decline, or tentatively accept a meeting invitation.
 
@@ -115,5 +162,6 @@ TOOLS = [
     exchange_get_calendar,
     exchange_get_new_events,
     exchange_create_event,
+    exchange_update_event,
     exchange_respond_to_event,
 ]

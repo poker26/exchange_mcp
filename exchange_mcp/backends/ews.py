@@ -23,6 +23,7 @@ from .base import (
     AttachmentInfo,
     BackendError,
     CalendarItem,
+    CalendarUpdateError,
     ContactItem,
     FolderInfo,
     MailBackend,
@@ -46,6 +47,14 @@ _EWS_FOLDER_TYPE = {
 
 _DEFAULT_FOLDERS_CACHE_TTL = 300.0
 _MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024
+_MAX_EVENT_SUBJECT_LEN = 500
+_MAX_EVENT_BODY_LEN = 50_000
+
+_SEND_MEETING_INVITATION_ALIASES = {
+    "to_all": "SendToAllAndSaveCopy",
+    "to_changed": "SendToChangedAndSaveCopy",
+    "save_only": "SendToNone",
+}
 
 _ssl_adapter_configured = False
 
@@ -124,7 +133,7 @@ class EWSBackend:
         with self._operation_lock:
             try:
                 return operation()
-            except BackendError:
+            except (BackendError, CalendarUpdateError):
                 raise
             except Exception as exc:
                 raise BackendError(f"{operation_name}: {exc}") from exc
@@ -411,6 +420,123 @@ class EWSBackend:
             ]
 
         return self._run_serialized("list_attachments", _list)
+
+    @staticmethod
+    def _resolve_send_meeting_invitations(alias: str) -> str:
+        normalized = (alias or "to_all").strip().lower()
+        resolved = _SEND_MEETING_INVITATION_ALIASES.get(normalized)
+        if resolved is None:
+            allowed = ", ".join(sorted(_SEND_MEETING_INVITATION_ALIASES))
+            raise CalendarUpdateError(
+                "INVALID_SEND_MEETING",
+                f"send_meeting_invitations must be one of: {allowed}",
+            )
+        return resolved
+
+    def update_calendar_event(
+        self,
+        event_id: str,
+        *,
+        start: Optional[str] = None,
+        end: Optional[str] = None,
+        subject: Optional[str] = None,
+        location: Optional[str] = None,
+        body: Optional[str] = None,
+        body_is_html: bool = False,
+        send_meeting_invitations: str = "to_all",
+    ) -> CalendarItem:
+        def _update() -> CalendarItem:
+            from exchangelib import CalendarItem as EwsCalendarItem  # type: ignore[import-not-found]
+            from exchangelib import HTMLBody  # type: ignore[import-not-found]
+
+            account = self._account_or_raise()
+            try:
+                item = account.root.get_item(_item_id_type()(id=event_id))
+            except Exception as exc:
+                raise CalendarUpdateError(
+                    "EVENT_NOT_FOUND",
+                    f"event {event_id!r} not found: {exc}",
+                ) from exc
+
+            if not isinstance(item, EwsCalendarItem):
+                raise CalendarUpdateError(
+                    "NOT_A_CALENDAR_ITEM",
+                    f"item {event_id!r} is not a calendar event",
+                )
+
+            if getattr(item, "recurrence", None) or getattr(item, "is_recurring", False):
+                raise CalendarUpdateError(
+                    "RECURRENCE_UNSUPPORTED",
+                    "recurring events cannot be updated yet; edit in Outlook",
+                )
+
+            changed_fields: list[str] = []
+
+            if subject is not None and subject.strip():
+                if len(subject) > _MAX_EVENT_SUBJECT_LEN:
+                    raise CalendarUpdateError(
+                        "FIELD_TOO_LONG",
+                        f"subject exceeds {_MAX_EVENT_SUBJECT_LEN} characters",
+                    )
+                item.subject = subject.strip()
+                changed_fields.append("subject")
+
+            if location is not None and location.strip():
+                item.location = location.strip()
+                changed_fields.append("location")
+
+            if body is not None and body.strip():
+                if len(body) > _MAX_EVENT_BODY_LEN:
+                    raise CalendarUpdateError(
+                        "FIELD_TOO_LONG",
+                        f"body exceeds {_MAX_EVENT_BODY_LEN} characters",
+                    )
+                item.body = HTMLBody(body) if body_is_html else body
+                changed_fields.append("body")
+
+            if start is not None and start.strip():
+                item.start = _to_ews_datetime(parse_iso_datetime(start))
+                changed_fields.append("start")
+
+            if end is not None and end.strip():
+                item.end = _to_ews_datetime(parse_iso_datetime(end))
+                changed_fields.append("end")
+
+            if not changed_fields:
+                raise CalendarUpdateError(
+                    "NO_FIELDS_TO_UPDATE",
+                    "provide at least one non-empty field to update",
+                )
+
+            if item.start is not None and item.end is not None:
+                start_plain = _to_plain_utc_datetime(item.start)
+                end_plain = _to_plain_utc_datetime(item.end)
+                if end_plain <= start_plain:
+                    raise CalendarUpdateError(
+                        "INVALID_TIME_RANGE",
+                        "end must be after start",
+                    )
+
+            invitation_mode = self._resolve_send_meeting_invitations(
+                send_meeting_invitations,
+            )
+            try:
+                item.save(
+                    update_fields=changed_fields,
+                    send_meeting_invitations=invitation_mode,
+                )
+                item.refresh()
+            except CalendarUpdateError:
+                raise
+            except Exception as exc:
+                raise CalendarUpdateError(
+                    "EWS_FAULT",
+                    f"failed to save calendar event: {exc}",
+                ) from exc
+
+            return self._to_calendar_item(item)
+
+        return self._run_serialized("update_calendar_event", _update)
 
     def respond_to_event(self, event_id: str, response: str) -> CalendarItem:
         def _respond() -> CalendarItem:
