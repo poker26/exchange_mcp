@@ -22,20 +22,57 @@ function escHtml(value) {
   return String(value || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
-function stripHtml(html) {
-  if (!html) return '';
-  return String(html)
-    .replace(/\r\n/g, '\n')
-    .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<\/(?:p|div|tr|li|h[1-6])>/gi, '\n')
-    .replace(/<[^>]+>/g, '')
+function looksLikeHtml(text) {
+  const sample = String(text || '').slice(0, 8000);
+  return /<\s*(?:html|head|body|style|table|div|p|span)\b/i.test(sample);
+}
+
+function decodeHtmlEntities(text) {
+  return String(text || '')
     .replace(/&nbsp;/gi, ' ')
     .replace(/&amp;/g, '&')
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
-    .replace(/[ \t]+\n/g, '\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&apos;/g, "'");
+}
+
+function dropCssArtifactLines(text) {
+  return String(text || '')
+    .split('\n')
+    .filter((line) => {
+      const trimmed = line.trim();
+      if (!trimmed) return true;
+      if (/^@media\b/i.test(trimmed)) return false;
+      if (/^\s*[.#][\w-]+\s*\{/.test(trimmed)) return false;
+      if (/\{[^}]*\}/.test(trimmed) && /!important|(?:^|[;\s])(?:margin|padding|font-size|line-height|display|width|height)\s*:/i.test(trimmed)) {
+        return false;
+      }
+      return true;
+    })
+    .join('\n');
+}
+
+function stripHtml(html) {
+  if (!html) return '';
+  let text = String(html)
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n');
+
+  text = text.replace(/<head[\s\S]*?<\/head>/gi, '');
+  text = text.replace(/<style[\s\S]*?<\/style>/gi, '');
+  text = text.replace(/<script[\s\S]*?<\/script>/gi, '');
+  text = text.replace(/<!--[\s\S]*?-->/g, '');
+  text = text.replace(/<!\[CDATA\[([\s\S]*?)\]\]>/gi, '$1');
+  text = text.replace(/<br\s*\/?>/gi, '\n');
+  text = text.replace(/<\/(?:p|div|tr|li|h[1-6]|table|td|th|blockquote)>/gi, '\n');
+  text = text.replace(/<[^>]+>/g, '');
+  text = decodeHtmlEntities(text);
+  text = dropCssArtifactLines(text);
+  text = text.replace(/[ \t]+\n/g, '\n');
+  text = text.replace(/\n{3,}/g, '\n\n');
+  return text.trim();
 }
 
 function parseIcalDate(raw) {
@@ -101,7 +138,8 @@ function bodyForTelegram(email) {
   const maxLen = 3500;
   let plain = '';
   if (email.body) {
-    plain = email.body_is_html ? stripHtml(email.body) : String(email.body);
+    const rawBody = String(email.body);
+    plain = (email.body_is_html || looksLikeHtml(rawBody)) ? stripHtml(rawBody) : rawBody;
   } else if (email.preview) {
     plain = String(email.preview);
   }

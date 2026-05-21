@@ -4,6 +4,7 @@ from pathlib import Path
 root = Path(__file__).parent
 workflow_path = root / "exchange-emails-events-telegram-yandex.json"
 format_events_js = (root / "format-events.js").read_text(encoding="utf-8")
+format_emails_js = (root / "format-emails.js").read_text(encoding="utf-8")
 
 data = json.loads(workflow_path.read_text(encoding="utf-8"))
 
@@ -69,6 +70,8 @@ delete_node = {
 for node in data["nodes"]:
     if node["name"] == "Format Events":
         node["parameters"]["jsCode"] = format_events_js
+    if node["name"] == "Format Emails":
+        node["parameters"]["jsCode"] = format_emails_js
     if node["name"] == "Sticky Note":
         node["parameters"]["content"] = (
             "## Настройка\n\n"
