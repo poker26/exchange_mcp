@@ -7,6 +7,7 @@ from typing import Optional
 from ..backends.base import CalendarUpdateError
 from ..clients import router
 from ..datetime_util import parse_iso_datetime
+from ..scheduling_util import SchedulingError
 
 
 def _default_week_range() -> tuple[datetime, datetime]:
@@ -147,6 +148,111 @@ def exchange_update_event(
     }
 
 
+def exchange_get_availability(
+    attendees: list[str],
+    date_from: str,
+    date_to: str,
+    timezone: str = "",
+    granularity_minutes: int = 30,
+) -> dict:
+    """Free/busy intervals for meeting attendees (EWS GetUserAvailability).
+
+    The organizer mailbox is added automatically when missing from `attendees`.
+    Naive ISO datetimes are interpreted in `timezone` (default from CALENDAR_TIMEZONE).
+
+    Args:
+        attendees: SMTP addresses (1-100).
+        date_from: ISO start of the search window.
+        date_to: ISO end of the window (max 14 days from date_from).
+        timezone: IANA timezone, e.g. Europe/Moscow.
+        granularity_minutes: 15, 30, or 60 (default 30).
+    """
+    try:
+        rows, errors, backend, window_start, window_end, timezone_name = (
+            router.get_availability(
+                attendees,
+                date_from,
+                date_to,
+                timezone=timezone or None,
+                granularity_minutes=granularity_minutes,
+            )
+        )
+    except SchedulingError as exc:
+        return {"error": True, "code": exc.code, "message": str(exc)}
+    return {
+        "backend": backend,
+        "timezone": timezone_name,
+        "date_from": window_start.isoformat(),
+        "date_to": window_end.isoformat(),
+        "granularity_minutes": granularity_minutes,
+        "attendees": [row.to_dict() for row in rows],
+        "errors": errors,
+    }
+
+
+def exchange_suggest_meeting_times(
+    attendees: list[str],
+    date_from: str,
+    date_to: str,
+    duration_minutes: int,
+    timezone: str = "",
+    max_suggestions: int = 5,
+    working_hours_start: str = "09:00",
+    working_hours_end: str = "18:00",
+    working_days: Optional[list[str]] = None,
+    buffer_minutes: int = 0,
+) -> dict:
+    """Suggest meeting slots when all attendees are free.
+
+    Resolves free/busy internally, then finds overlapping slots inside working hours.
+    Prefer this over manual calendar inspection for scheduling requests.
+
+    Args:
+        attendees: SMTP addresses; organizer is auto-included.
+        date_from: ISO start of search window.
+        date_to: ISO end (max 14 days).
+        duration_minutes: meeting length (15-480).
+        timezone: IANA timezone for naive datetimes.
+        max_suggestions: number of slots to return (1-20, default 5).
+        working_hours_start: local day start HH:MM (default 09:00).
+        working_hours_end: local day end HH:MM (default 18:00).
+        working_days: e.g. monday,tuesday,... (default Mon-Fri).
+        buffer_minutes: padding around existing busy blocks.
+    """
+    try:
+        (
+            suggestions,
+            partial,
+            unresolved,
+            backend,
+            _window_start,
+            _window_end,
+            timezone_name,
+            duration,
+        ) = router.suggest_meeting_times(
+            attendees,
+            date_from,
+            date_to,
+            duration_minutes=duration_minutes,
+            timezone=timezone or None,
+            max_suggestions=max_suggestions,
+            working_hours_start=working_hours_start,
+            working_hours_end=working_hours_end,
+            working_days=working_days,
+            buffer_minutes=buffer_minutes,
+        )
+    except SchedulingError as exc:
+        return {"error": True, "code": exc.code, "message": str(exc)}
+    return {
+        "backend": backend,
+        "timezone": timezone_name,
+        "duration_minutes": duration,
+        "suggestions": [slot.to_dict() for slot in suggestions],
+        "partial": partial,
+        "unresolved_attendees": unresolved,
+    }
+
+
 def exchange_respond_to_event(event_id: str, response: str) -> dict:
     """Accept, decline, or tentatively accept a meeting invitation.
 
@@ -168,5 +274,7 @@ TOOLS = [
     exchange_get_new_events,
     exchange_create_event,
     exchange_update_event,
+    exchange_get_availability,
+    exchange_suggest_meeting_times,
     exchange_respond_to_event,
 ]

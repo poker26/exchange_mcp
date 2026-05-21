@@ -18,10 +18,18 @@ from typing import Optional
 
 from ..config import settings
 from ..datetime_util import parse_iso_datetime
+from ..scheduling_util import (
+    map_ews_busy_status,
+    minutes_since_midnight_to_hhmm,
+    normalize_email_address,
+    weekday_names_to_strings,
+)
 from .base import (
     AttachmentData,
     AttachmentInfo,
+    AttendeeAvailability,
     BackendError,
+    BusyInterval,
     CalendarItem,
     CalendarUpdateError,
     ContactItem,
@@ -90,6 +98,13 @@ def _to_ews_datetime(value: datetime) -> datetime:
     if value.tzinfo is None:
         value = value.replace(tzinfo=timezone.utc)
     return EWSDateTime.from_datetime(value)
+
+
+def _normalize_smtp_address(value: str) -> str:
+    text = (value or "").strip()
+    if text.upper().startswith("SMTP:"):
+        return text[5:].strip()
+    return text
 
 
 def _to_plain_utc_datetime(value: datetime) -> datetime:
@@ -765,6 +780,231 @@ class EWSBackend:
             return [self._to_mail_item(message, include_body=False) for message in query_set]
 
         return self._run_serialized("search_emails", _search)
+
+    def search_contacts(self, query: str, limit: int = 20) -> list[ContactItem]:
+        def _search() -> list[ContactItem]:
+            from exchangelib import Q  # type: ignore[import-not-found]
+            from exchangelib.items import ACTIVE_DIRECTORY  # type: ignore[import-not-found]
+
+            account = self._account_or_raise()
+            search_text = query.strip()
+            seen_emails: set[str] = set()
+            results: list[ContactItem] = []
+
+            def add_contact(contact_item: ContactItem) -> None:
+                email_key = normalize_email_address(contact_item.email)
+                if not email_key or email_key in seen_emails:
+                    return
+                seen_emails.add(email_key)
+                results.append(contact_item)
+
+            try:
+                resolved = account.protocol.resolve_names(
+                    names=[search_text],
+                    return_full_contact_data=True,
+                    search_scope=ACTIVE_DIRECTORY,
+                )
+                for entry in resolved:
+                    if isinstance(entry, tuple) and len(entry) == 2:
+                        mailbox, contact = entry
+                        if contact is not None:
+                            add_contact(self._to_contact_item(contact))
+                        elif mailbox is not None:
+                            email_address = _normalize_smtp_address(
+                                getattr(mailbox, "email_address", "") or "",
+                            )
+                            add_contact(ContactItem(
+                                backend="ews",
+                                server_id=email_address,
+                                display_name=getattr(mailbox, "name", "") or email_address,
+                                email=email_address,
+                            ))
+                    elif entry is not None:
+                        email_address = _normalize_smtp_address(
+                            getattr(entry, "email_address", "") or "",
+                        )
+                        add_contact(ContactItem(
+                            backend="ews",
+                            server_id=email_address,
+                            display_name=getattr(entry, "name", "") or email_address,
+                            email=email_address,
+                        ))
+            except Exception as exc:
+                logger.debug("ResolveNames failed for %r: %s", search_text, exc)
+
+            if len(results) < limit:
+                folder = account.contacts
+                filter_query = (
+                    Q(display_name__icontains=search_text)
+                    | Q(given_name__icontains=search_text)
+                    | Q(surname__icontains=search_text)
+                )
+                field_names = [
+                    "id",
+                    "display_name",
+                    "email_addresses",
+                    "phone_numbers",
+                    "company_name",
+                ]
+                query_set = (
+                    folder.filter(filter_query)
+                    .only(*field_names)
+                    .order_by("display_name")
+                )
+                remaining = limit - len(results)
+                for contact in query_set[:remaining]:
+                    add_contact(self._to_contact_item(contact))
+
+            return results[:limit]
+
+        return self._run_serialized("search_contacts", _search)
+
+    def get_availability(
+        self,
+        attendees: list[str],
+        window_start: datetime,
+        window_end: datetime,
+        granularity_minutes: int = 30,
+    ) -> tuple[list[AttendeeAvailability], list[dict]]:
+        def _fetch() -> tuple[list[AttendeeAvailability], list[dict]]:
+            account = self._account_or_raise()
+            organizer_email = normalize_email_address(
+                (settings.exchange_email or "").strip(),
+            )
+            organizer_domain = (
+                organizer_email.split("@")[-1] if "@" in organizer_email else ""
+            )
+
+            ews_start = _to_ews_datetime(window_start)
+            ews_end = _to_ews_datetime(window_end)
+            granularity = granularity_minutes
+            if granularity not in (15, 30, 60):
+                granularity = 30
+
+            availability_rows: list[AttendeeAvailability] = []
+            error_rows: list[dict] = []
+
+            ews_accounts: list[tuple] = []
+            email_order: list[str] = []
+
+            for index, email in enumerate(attendees):
+                normalized = normalize_email_address(email)
+                attendee_domain = (
+                    normalized.split("@")[-1] if "@" in normalized else ""
+                )
+                role = "organizer" if index == 0 or normalized == organizer_email else "required"
+                if (
+                    organizer_domain
+                    and attendee_domain
+                    and attendee_domain != organizer_domain
+                ):
+                    availability_rows.append(AttendeeAvailability(
+                        email=normalized,
+                        role=role,
+                        calendar_status="external",
+                        busy=[],
+                    ))
+                    error_rows.append({
+                        "email": normalized,
+                        "code": "EXTERNAL_ATTENDEE",
+                        "message": "free/busy unavailable for external mailbox",
+                    })
+                    continue
+
+                attendee_type = "Organizer" if role == "organizer" else "Required"
+                if role == "organizer":
+                    ews_accounts.append((account, attendee_type, False))
+                else:
+                    ews_accounts.append((normalized, attendee_type, False))
+                email_order.append(normalized)
+
+            if ews_accounts:
+                try:
+                    views = list(
+                        account.protocol.get_free_busy_info(
+                            accounts=ews_accounts,
+                            start=ews_start,
+                            end=ews_end,
+                            merged_free_busy_interval=granularity,
+                            requested_view="Detailed",
+                        ),
+                    )
+                except Exception as exc:
+                    raise BackendError(f"get_free_busy_info: {exc}") from exc
+
+                for email, view in zip(email_order, views, strict=False):
+                    if isinstance(view, Exception):
+                        availability_rows.append(AttendeeAvailability(
+                            email=email,
+                            role="required" if email != organizer_email else "organizer",
+                            calendar_status="error",
+                            busy=[],
+                        ))
+                        error_rows.append({
+                            "email": email,
+                            "code": "EWS_FAULT",
+                            "message": str(view),
+                        })
+                        continue
+
+                    calendar_status = "ok"
+                    view_type = str(getattr(view, "view_type", "") or "")
+                    if "None" in view_type or view_type == "":
+                        calendar_status = "not_found"
+
+                    busy_intervals: list[BusyInterval] = []
+                    for event in getattr(view, "calendar_events", None) or []:
+                        status = map_ews_busy_status(getattr(event, "busy_type", "Busy"))
+                        if status == "free":
+                            continue
+                        start_value = getattr(event, "start", None)
+                        end_value = getattr(event, "end", None)
+                        if start_value is None or end_value is None:
+                            continue
+                        busy_intervals.append(BusyInterval(
+                            start=_to_plain_utc_datetime(start_value).astimezone(
+                                window_start.tzinfo or timezone.utc,
+                            ),
+                            end=_to_plain_utc_datetime(end_value).astimezone(
+                                window_start.tzinfo or timezone.utc,
+                            ),
+                            status=status,
+                        ))
+
+                    working_hours_payload = None
+                    working_periods = getattr(view, "working_hours", None) or []
+                    if working_periods:
+                        first_period = working_periods[0]
+                        working_hours_payload = {
+                            "start": minutes_since_midnight_to_hhmm(
+                                getattr(first_period, "start", 540),
+                            ),
+                            "end": minutes_since_midnight_to_hhmm(
+                                getattr(first_period, "end", 1080),
+                            ),
+                            "days": weekday_names_to_strings(
+                                getattr(first_period, "weekdays", None),
+                            ),
+                        }
+
+                    role = "organizer" if email == organizer_email else "required"
+                    availability_rows.append(AttendeeAvailability(
+                        email=email,
+                        role=role,
+                        calendar_status=calendar_status,
+                        busy=busy_intervals,
+                        working_hours=working_hours_payload,
+                    ))
+
+            rows_by_email = {row.email: row for row in availability_rows}
+            ordered_rows = [
+                rows_by_email[normalize_email_address(email)]
+                for email in attendees
+                if normalize_email_address(email) in rows_by_email
+            ]
+            return ordered_rows, error_rows
+
+        return self._run_serialized("get_availability", _fetch)
 
     def get_contacts(
         self,

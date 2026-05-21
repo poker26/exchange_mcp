@@ -21,12 +21,23 @@ from typing import Callable, Optional, TypeVar
 from .backends.base import (
     AttachmentData,
     AttachmentInfo,
+    AttendeeAvailability,
     BackendError,
     CalendarItem,
     CalendarUpdateError,
     ContactItem,
     FolderInfo,
     MailItem,
+    MeetingSuggestion,
+)
+from .config import settings
+from .scheduling_util import (
+    SchedulingError,
+    normalize_working_days,
+    parse_working_time_hhmm,
+    suggest_meeting_times as compute_meeting_suggestions,
+    validate_attendee_list,
+    validate_availability_window,
 )
 from .backends.ews import EWSBackend
 from .config import settings
@@ -109,7 +120,7 @@ class MailRouter:
     ) -> tuple[ReturnType, EWSBackend]:
         try:
             return operation(self.ews), self.ews
-        except CalendarUpdateError:
+        except (CalendarUpdateError, SchedulingError):
             raise
         except BackendError:
             self._mark_unhealthy()
@@ -469,6 +480,98 @@ class MailRouter:
 
         items, _backend = self._execute("get_contacts", _fetch)
         return items, "ews"
+
+    def search_contacts(self, query: str, limit: int = 20) -> tuple[list[ContactItem], str]:
+        def _search(ews: EWSBackend) -> list[ContactItem]:
+            return ews.search_contacts(query, limit=limit)
+
+        items, _backend = self._execute("search_contacts", _search)
+        return items, "ews"
+
+    def get_availability(
+        self,
+        attendees: list[str],
+        date_from: str,
+        date_to: str,
+        timezone: Optional[str] = None,
+        granularity_minutes: int = 30,
+    ) -> tuple[list[AttendeeAvailability], list[dict], str, datetime, datetime, str]:
+        timezone_name = (timezone or settings.calendar_timezone).strip()
+        organizer_email = (settings.exchange_email or "").strip()
+        normalized_attendees = validate_attendee_list(attendees, organizer_email)
+        window_start, window_end, _tz = validate_availability_window(
+            date_from, date_to, timezone_name,
+        )
+
+        def _fetch(ews: EWSBackend) -> tuple[list[AttendeeAvailability], list[dict]]:
+            return ews.get_availability(
+                normalized_attendees,
+                window_start,
+                window_end,
+                granularity_minutes=granularity_minutes,
+            )
+
+        fetch_result, _backend = self._execute("get_availability", _fetch)
+        rows, errors = fetch_result
+        return rows, errors, "ews", window_start, window_end, timezone_name
+
+    def suggest_meeting_times(
+        self,
+        attendees: list[str],
+        date_from: str,
+        date_to: str,
+        duration_minutes: int,
+        timezone: Optional[str] = None,
+        max_suggestions: int = 5,
+        working_hours_start: str = "09:00",
+        working_hours_end: str = "18:00",
+        working_days: Optional[list[str]] = None,
+        buffer_minutes: int = 0,
+    ) -> tuple[list[MeetingSuggestion], bool, list[str], str, datetime, datetime, str, int]:
+        timezone_name = (timezone or settings.calendar_timezone).strip()
+        organizer_email = (settings.exchange_email or "").strip()
+        normalized_attendees = validate_attendee_list(attendees, organizer_email)
+        window_start, window_end, _tz = validate_availability_window(
+            date_from, date_to, timezone_name,
+        )
+        working_start = parse_working_time_hhmm(
+            working_hours_start, field_name="working_hours_start",
+        )
+        working_end = parse_working_time_hhmm(
+            working_hours_end, field_name="working_hours_end",
+        )
+        normalized_working_days = normalize_working_days(working_days)
+        max_suggestions = max(1, min(int(max_suggestions), 20))
+
+        availability_rows, _errors, _backend, _, _, _ = self.get_availability(
+            normalized_attendees,
+            date_from,
+            date_to,
+            timezone=timezone_name,
+            granularity_minutes=15,
+        )
+
+        suggestions, partial, unresolved = compute_meeting_suggestions(
+            availability_rows,
+            window_start=window_start,
+            window_end=window_end,
+            duration_minutes=int(duration_minutes),
+            max_suggestions=max_suggestions,
+            working_start=working_start,
+            working_end=working_end,
+            working_days=normalized_working_days,
+            buffer_minutes=int(buffer_minutes),
+        )
+        return (
+            suggestions,
+            partial,
+            unresolved,
+            "ews",
+            window_start,
+            window_end,
+            timezone_name,
+            int(duration_minutes),
+        )
 
     def get_attachment(
         self,

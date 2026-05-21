@@ -27,6 +27,8 @@ $env:PYTHONPATH = "C:\Users\hippo\exchange_mcp"
 
 После `git pull` перезапустите `python -m exchange_mcp` и **Reload MCP** в Cursor.
 
+Для AI-агентов (планирование встреч): **`AGENTS.md`** в корне репозитория.
+
 ## Перед запуском
 
 1. В `.env` задайте **`EXCHANGE_PASSWORD`**.

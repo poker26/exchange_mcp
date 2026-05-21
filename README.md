@@ -52,6 +52,7 @@ Working (EWS):
 
 - Mail: list/new/get/search/send, mark read, delete, move, reply, forward
 - Calendar: get/new/create/update, respond (accept/decline/tentative)
+- Scheduling: search contacts, get availability, suggest meeting times (see `AGENTS.md`)
 - Contacts, folders, list/download attachments (10 MB cap)
 
 Calendar update: see `docs/rfc/0001-calendar-update-reschedule.md`.

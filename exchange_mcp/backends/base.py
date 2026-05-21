@@ -93,6 +93,56 @@ class CalendarItem:
 
 
 @dataclass
+class BusyInterval:
+    start: datetime
+    end: datetime
+    status: str
+
+    def to_dict(self) -> dict:
+        return {
+            "start": self.start.isoformat(),
+            "end": self.end.isoformat(),
+            "status": self.status,
+        }
+
+
+@dataclass
+class AttendeeAvailability:
+    email: str
+    role: str
+    calendar_status: str
+    busy: list[BusyInterval] = field(default_factory=list)
+    working_hours: Optional[dict] = None
+
+    def to_dict(self) -> dict:
+        payload = {
+            "email": self.email,
+            "role": self.role,
+            "calendar_status": self.calendar_status,
+            "busy": [interval.to_dict() for interval in self.busy],
+        }
+        if self.working_hours is not None:
+            payload["working_hours"] = self.working_hours
+        return payload
+
+
+@dataclass
+class MeetingSuggestion:
+    start: datetime
+    end: datetime
+    score: float
+    all_attendees_free: bool
+
+    def to_dict(self) -> dict:
+        return {
+            "start": self.start.isoformat(),
+            "end": self.end.isoformat(),
+            "score": self.score,
+            "all_attendees_free": self.all_attendees_free,
+        }
+
+
+@dataclass
 class ContactItem:
     backend: str
     server_id: str

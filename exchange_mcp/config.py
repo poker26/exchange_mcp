@@ -20,6 +20,7 @@ class Settings(BaseSettings):
 
     # EWS tuning
     ews_folders_cache_ttl: float = 300.0
+    calendar_timezone: str = "Europe/Moscow"
 
     # State
     state_dir: str = "/app/state"
