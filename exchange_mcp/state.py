@@ -11,14 +11,17 @@ from __future__ import annotations
 import json
 import logging
 import os
+import secrets
 import threading
 from collections import OrderedDict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Iterable, Optional
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_LRU_SIZE = 2000
+_DELETE_CONFIRMATION_TTL = timedelta(minutes=10)
+_DELETE_USER_PHRASE = "ДА, УДАЛИТЬ"
 
 
 class _FolderState:
@@ -59,6 +62,7 @@ class SharedState:
         self.path = path
         self.max_seen = max_seen
         self._folders: dict[str, _FolderState] = {}
+        self._pending_event_deletions: dict[str, dict] = {}
         self._lock = threading.RLock()
         self._load()
 
@@ -81,6 +85,10 @@ class SharedState:
                 max_seen=self.max_seen,
                 calendar_events=blob.get("calendar_events") or {},
             )
+        self._pending_event_deletions = dict(
+            raw.get("pending_event_deletions") or {},
+        )
+        self._prune_expired_pending_deletions_locked()
         logger.info("Loaded state for %d folders from %s",
                     len(self._folders), self.path)
 
@@ -89,6 +97,7 @@ class SharedState:
         tmp = self.path + ".tmp"
         payload = {
             "folders": {fid: fs.to_dict() for fid, fs in self._folders.items()},
+            "pending_event_deletions": self._pending_event_deletions,
         }
         try:
             with open(tmp, "w") as f:
@@ -185,14 +194,92 @@ class SharedState:
             del folder_state.calendar_events[uid]
             self._save_locked()
 
+    def _prune_expired_pending_deletions_locked(self) -> None:
+        now = datetime.now(timezone.utc)
+        expired_ids = []
+        for confirmation_id, pending in self._pending_event_deletions.items():
+            try:
+                expires_at = datetime.fromisoformat(pending["expires_at"])
+            except (KeyError, ValueError):
+                expired_ids.append(confirmation_id)
+                continue
+            if expires_at.tzinfo is None:
+                expires_at = expires_at.replace(tzinfo=timezone.utc)
+            if expires_at <= now:
+                expired_ids.append(confirmation_id)
+        for confirmation_id in expired_ids:
+            del self._pending_event_deletions[confirmation_id]
+
+    def create_pending_event_deletion(
+        self,
+        event_id: str,
+        subject: str,
+        start_iso: str,
+        end_iso: str,
+    ) -> dict:
+        """Register a delete intent; returns confirmation payload for the user."""
+        now = datetime.now(timezone.utc)
+        confirmation_id = secrets.token_urlsafe(8)
+        pending = {
+            "confirmation_id": confirmation_id,
+            "event_id": event_id,
+            "subject": subject,
+            "start": start_iso,
+            "end": end_iso,
+            "required_phrase": _DELETE_USER_PHRASE,
+            "created_at": now.isoformat(),
+            "expires_at": (now + _DELETE_CONFIRMATION_TTL).isoformat(),
+        }
+        with self._lock:
+            self._prune_expired_pending_deletions_locked()
+            self._pending_event_deletions[confirmation_id] = pending
+            self._save_locked()
+        return dict(pending)
+
+    def consume_pending_event_deletion(
+        self,
+        confirmation_id: str,
+        event_id: str,
+        user_confirmation: str,
+    ) -> dict:
+        """Validate and remove a pending delete. Raises ValueError on failure."""
+        with self._lock:
+            self._prune_expired_pending_deletions_locked()
+            pending = self._pending_event_deletions.get(confirmation_id)
+            if pending is None:
+                raise ValueError(
+                    "CONFIRMATION_EXPIRED_OR_UNKNOWN: call "
+                    "exchange_prepare_delete_event first",
+                )
+            if pending.get("event_id") != event_id:
+                raise ValueError(
+                    "EVENT_ID_MISMATCH: event_id does not match prepared deletion",
+                )
+            if (user_confirmation or "").strip() != _DELETE_USER_PHRASE:
+                raise ValueError(
+                    f"USER_CONFIRMATION_REQUIRED: user must reply exactly: "
+                    f"{_DELETE_USER_PHRASE!r}",
+                )
+            del self._pending_event_deletions[confirmation_id]
+            self._save_locked()
+            return dict(pending)
+
+    @staticmethod
+    def delete_confirmation_phrase() -> str:
+        return _DELETE_USER_PHRASE
+
     def snapshot(self) -> dict:
         """Return a JSON-serializable snapshot (for /health and debugging)."""
         with self._lock:
-            return {
-                fid: {
-                    "cursor": fs.cursor,
-                    "seen_count": len(fs.seen),
-                    "calendar_events_count": len(fs.calendar_events),
+            folder_snapshot = {
+                folder_id: {
+                    "cursor": folder_state.cursor,
+                    "seen_count": len(folder_state.seen),
+                    "calendar_events_count": len(folder_state.calendar_events),
                 }
-                for fid, fs in self._folders.items()
+                for folder_id, folder_state in self._folders.items()
             }
+            folder_snapshot["pending_event_deletions_count"] = len(
+                self._pending_event_deletions,
+            )
+            return folder_snapshot

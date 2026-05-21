@@ -470,6 +470,41 @@ class MailRouter:
         item, _backend = self._execute("update_calendar_event", _update)
         return item, "ews"
 
+    def prepare_delete_calendar_event(self, event_id: str) -> tuple[dict, str]:
+        def _fetch(ews: EWSBackend) -> CalendarItem:
+            return ews.get_calendar_event_by_id(event_id)
+
+        event, _backend = self._execute("prepare_delete_calendar_event", _fetch)
+        pending = self.state.create_pending_event_deletion(
+            event_id=event_id,
+            subject=event.subject,
+            start_iso=event.start.isoformat() if event.start else "",
+            end_iso=event.end.isoformat() if event.end else "",
+        )
+        return pending, "ews"
+
+    def delete_calendar_event(
+        self,
+        event_id: str,
+        confirmation_id: str,
+        user_confirmation: str,
+    ) -> str:
+        try:
+            self.state.consume_pending_event_deletion(
+                confirmation_id, event_id, user_confirmation,
+            )
+        except ValueError as exc:
+            raise CalendarUpdateError(
+                str(exc).split(":", 1)[0],
+                str(exc),
+            ) from exc
+
+        def _delete(ews: EWSBackend) -> None:
+            ews.delete_calendar_event(event_id)
+
+        self._execute("delete_calendar_event", _delete)
+        return "ews"
+
     def get_contacts(
         self,
         folder_id: Optional[str],

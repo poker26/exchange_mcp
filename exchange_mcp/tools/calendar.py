@@ -253,6 +253,62 @@ def exchange_suggest_meeting_times(
     }
 
 
+def exchange_prepare_delete_event(event_id: str) -> dict:
+    """Step 1/2: preview a calendar deletion and obtain a confirmation_id.
+
+    DANGEROUS workflow guard: do NOT call `exchange_delete_event` until the
+    user has read the preview and replied in chat with the exact phrase
+    returned in `required_phrase` (default: «ДА, УДАЛИТЬ»).
+    """
+    try:
+        pending, backend = router.prepare_delete_calendar_event(event_id)
+    except CalendarUpdateError as exc:
+        return {"error": True, "code": exc.code, "message": str(exc)}
+    return {
+        "backend": backend,
+        "status": "awaiting_confirmation",
+        "confirmation_id": pending["confirmation_id"],
+        "required_phrase": pending["required_phrase"],
+        "expires_at": pending["expires_at"],
+        "event": {
+            "id": pending["event_id"],
+            "subject": pending["subject"],
+            "start": pending["start"],
+            "end": pending["end"],
+        },
+        "instructions": (
+            "Show the user the event summary. Only after they type the "
+            f"exact phrase {pending['required_phrase']!r} in the chat, call "
+            "exchange_delete_event with the same confirmation_id, event_id, "
+            "and user_confirmation equal to that phrase."
+        ),
+    }
+
+
+def exchange_delete_event(
+    event_id: str,
+    confirmation_id: str,
+    user_confirmation: str,
+) -> dict:
+    """Step 2/2: delete a calendar event after explicit user confirmation.
+
+    Requires a fresh `confirmation_id` from `exchange_prepare_delete_event`
+    (valid ~10 minutes). `user_confirmation` must match `required_phrase`
+    exactly — the phrase the user typed in chat, e.g. «ДА, УДАЛИТЬ».
+    """
+    try:
+        backend = router.delete_calendar_event(
+            event_id, confirmation_id, user_confirmation,
+        )
+    except CalendarUpdateError as exc:
+        return {"error": True, "code": exc.code, "message": str(exc)}
+    return {
+        "backend": backend,
+        "status": "deleted",
+        "event_id": event_id,
+    }
+
+
 def exchange_respond_to_event(event_id: str, response: str) -> dict:
     """Accept, decline, or tentatively accept a meeting invitation.
 
@@ -274,6 +330,8 @@ TOOLS = [
     exchange_get_new_events,
     exchange_create_event,
     exchange_update_event,
+    exchange_prepare_delete_event,
+    exchange_delete_event,
     exchange_get_availability,
     exchange_suggest_meeting_times,
     exchange_respond_to_event,

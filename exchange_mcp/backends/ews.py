@@ -566,6 +566,83 @@ class EWSBackend:
 
         return self._run_serialized("update_calendar_event", _update)
 
+    def delete_calendar_event(
+        self,
+        event_id: str,
+        *,
+        send_cancellation: bool = True,
+    ) -> None:
+        def _delete() -> None:
+            from exchangelib import CalendarItem as EwsCalendarItem  # type: ignore[import-not-found]
+
+            account = self._account_or_raise()
+            try:
+                item = _fetch_item_by_id(account, event_id)
+            except BackendError as exc:
+                raise CalendarUpdateError(
+                    "EVENT_NOT_FOUND",
+                    str(exc),
+                ) from exc
+            except Exception as exc:
+                raise CalendarUpdateError(
+                    "EVENT_NOT_FOUND",
+                    f"event {event_id!r} not found: {exc}",
+                ) from exc
+
+            if not isinstance(item, EwsCalendarItem):
+                raise CalendarUpdateError(
+                    "NOT_A_CALENDAR_ITEM",
+                    f"item {event_id!r} is not a calendar event",
+                )
+
+            if getattr(item, "recurrence", None) is not None:
+                raise CalendarUpdateError(
+                    "RECURRENCE_UNSUPPORTED",
+                    "recurring events cannot be deleted via MCP yet",
+                )
+
+            has_attendees = bool(
+                getattr(item, "required_attendees", None)
+                or getattr(item, "optional_attendees", None)
+            )
+            try:
+                if has_attendees and send_cancellation and hasattr(item, "cancel"):
+                    item.cancel(send_meeting_cancellations="SendToAllAndSaveCopy")
+                else:
+                    item.delete()
+            except CalendarUpdateError:
+                raise
+            except Exception as exc:
+                raise CalendarUpdateError(
+                    "EWS_FAULT",
+                    f"failed to delete calendar event: {exc}",
+                ) from exc
+
+        self._run_serialized("delete_calendar_event", _delete)
+
+    def get_calendar_event_by_id(self, event_id: str) -> CalendarItem:
+        def _fetch() -> CalendarItem:
+            from exchangelib import CalendarItem as EwsCalendarItem  # type: ignore[import-not-found]
+
+            account = self._account_or_raise()
+            try:
+                item = _fetch_item_by_id(account, event_id)
+            except BackendError as exc:
+                raise CalendarUpdateError("EVENT_NOT_FOUND", str(exc)) from exc
+            except Exception as exc:
+                raise CalendarUpdateError(
+                    "EVENT_NOT_FOUND",
+                    f"event {event_id!r} not found: {exc}",
+                ) from exc
+            if not isinstance(item, EwsCalendarItem):
+                raise CalendarUpdateError(
+                    "NOT_A_CALENDAR_ITEM",
+                    f"item {event_id!r} is not a calendar event",
+                )
+            return self._to_calendar_item(item)
+
+        return self._run_serialized("get_calendar_event_by_id", _fetch)
+
     def respond_to_event(self, event_id: str, response: str) -> CalendarItem:
         def _respond() -> CalendarItem:
             account = self._account_or_raise()

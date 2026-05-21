@@ -88,6 +88,16 @@ Per-attendee проблемы — в `errors[]`, запрос не падает 
 | `exchange_update_event` | Перенести встречу (`start`/`end` в ISO) |
 | `exchange_get_calendar` | Детали **календаря организатора** (тема, тело); не заменяет free/busy коллег |
 
+### Удаление события (двухшагово, обязательно)
+
+**Никогда** не вызывайте `exchange_delete_event` без явного согласия пользователя в чате.
+
+1. `exchange_prepare_delete_event(event_id)` — показать пользователю preview (`subject`, `start`, `end`) и `confirmation_id`.
+2. Дождаться, пока пользователь **сам напишет** в чате точную фразу из `required_phrase` (по умолчанию **`ДА, УДАЛИТЬ`**).
+3. `exchange_delete_event(event_id, confirmation_id, user_confirmation="ДА, УДАЛИТЬ")` — только с той же фразой.
+
+Без шага 1–2 сервер вернёт `CONFIRMATION_EXPIRED_OR_UNKNOWN` или `USER_CONFIRMATION_REQUIRED`.
+
 ## Что НЕ использовать для планирования
 
 | Инструмент | Почему |
