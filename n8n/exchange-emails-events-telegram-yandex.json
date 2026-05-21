@@ -160,7 +160,7 @@
     },
     {
       "parameters": {
-        "jsCode": "function unwrapMcpPayload(raw) {\n  if (!raw || typeof raw !== 'object') return {};\n  if (raw.emails !== undefined || raw.events !== undefined || raw.is_initial !== undefined) {\n    return raw;\n  }\n  if (Array.isArray(raw.content) && raw.content.length > 0) {\n    const textPayload = raw.content[0].text;\n    if (textPayload && typeof textPayload === 'object') return textPayload;\n    if (typeof textPayload === 'string') {\n      try {\n        return JSON.parse(textPayload);\n      } catch {\n        return {};\n      }\n    }\n  }\n  return raw;\n}\n\nfunction unwrapMcp(nodeItems) {\n  const item = (nodeItems && nodeItems[0]) ? nodeItems[0] : null;\n  if (!item) return {};\n  return unwrapMcpPayload(item.json ?? item);\n}\n\n\nfunction escHtml(value) {\n  return String(value || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\n}\n\nfunction formatMskTime(isoValue) {\n  if (!isoValue) return '??:??';\n  const dateValue = new Date(isoValue);\n  if (Number.isNaN(dateValue.getTime())) return '??:??';\n  return dateValue.toLocaleTimeString('ru-RU', {\n    timeZone: 'Europe/Moscow',\n    hour: '2-digit',\n    minute: '2-digit',\n    hour12: false,\n  });\n}\n\nfunction formatMskDate(isoValue) {\n  if (!isoValue) return '?';\n  const dateValue = new Date(isoValue);\n  if (Number.isNaN(dateValue.getTime())) return '?';\n  return dateValue.toLocaleDateString('ru-RU', {\n    timeZone: 'Europe/Moscow',\n    day: 'numeric',\n    month: 'short',\n  });\n}\n\nfunction sanitizeUid(rawUid) {\n  return String(rawUid || '').replace(/[^a-zA-Z0-9@._-]/g, '_');\n}\n\nfunction toICalUtc(isoValue) {\n  if (!isoValue) return '';\n  return new Date(isoValue).toISOString().replace(/[-:]/g, '').replace(/\\.\\d{3}/, '');\n}\n\nfunction icalEsc(value) {\n  return String(value || '').replace(/\\\\/g, '\\\\\\\\').replace(/;/g, '\\\\;').replace(/,/g, '\\\\,').replace(/[\\r\\n]+/g, '\\\\n');\n}\n\nfunction buildICal(event) {\n  const uid = sanitizeUid(event.uid || event.id || `ews-${Date.now()}`);\n  const dtstart = toICalUtc(event.start);\n  const dtend = toICalUtc(event.end);\n  const now = toICalUtc(new Date().toISOString());\n\n  let ical = 'BEGIN:VCALENDAR\\r\\n';\n  ical += 'VERSION:2.0\\r\\n';\n  ical += 'PRODID:-//Exchange MCP//EN\\r\\n';\n  ical += 'BEGIN:VEVENT\\r\\n';\n  ical += `UID:${uid}\\r\\n`;\n  ical += `DTSTAMP:${now}\\r\\n`;\n  ical += `DTSTART:${dtstart}\\r\\n`;\n  ical += `DTEND:${dtend}\\r\\n`;\n  ical += `SUMMARY:${icalEsc(event.subject)}\\r\\n`;\n  if (event.location) ical += `LOCATION:${icalEsc(event.location)}\\r\\n`;\n  if (event.organizer) {\n    ical += `ORGANIZER:mailto:${icalEsc(event.organizer)}\\r\\n`;\n  }\n  const attendees = Array.isArray(event.attendees) ? event.attendees : [];\n  for (const attendee of attendees) {\n    const address = typeof attendee === 'string' ? attendee : (attendee.email || attendee.name || '');\n    if (address) ical += `ATTENDEE:mailto:${icalEsc(address)}\\r\\n`;\n  }\n  if (event.body) ical += `DESCRIPTION:${icalEsc(String(event.body).substring(0, 500))}\\r\\n`;\n  if (event.all_day) ical += 'X-MICROSOFT-CDO-ALLDAYEVENT:TRUE\\r\\n';\n  ical += 'END:VEVENT\\r\\n';\n  ical += 'END:VCALENDAR\\r\\n';\n  return { uid, ical };\n}\n\nfunction formatEventText(event) {\n  const startTime = formatMskTime(event.start);\n  const endTime = formatMskTime(event.end);\n  const dateStr = formatMskDate(event.start);\n\n  let text = `📅 <b>${escHtml(event.subject || '(без темы)')}</b>\\n`;\n  text += `🕐 ${dateStr}, ${startTime}–${endTime} МСК\\n`;\n  if (event.location) text += `📍 ${escHtml(event.location)}\\n`;\n  if (event.organizer) text += `👤 ${escHtml(event.organizer)}\\n`;\n\n  const searchableText = `${event.body || ''} ${event.location || ''}`;\n  const meetingLink = searchableText.match(\n    /https:\\/\\/[\\w.-]*(?:zoom\\.us|telemost\\.yandex|meet\\.google|teams\\.microsoft)[^\\s<\"]*/i,\n  );\n  if (meetingLink) text += `🔗 ${meetingLink[0]}\\n`;\n\n  const attendees = Array.isArray(event.attendees) ? event.attendees : [];\n  if (attendees.length > 0) {\n    const names = attendees\n      .map((entry) => (typeof entry === 'string' ? entry : (entry.name || entry.email)))\n      .filter(Boolean)\n      .slice(0, 5);\n    if (names.length > 0) text += `👥 ${escHtml(names.join(', '))}\\n`;\n  }\n  if (event.body) {\n    const bodyPlain = String(event.body).replace(/<[^>]+>/g, ' ').replace(/\\s+/g, ' ').trim();\n    if (bodyPlain) text += `\\n\\n${escHtml(bodyPlain.slice(0, 800))}`;\n  }\n\n  return text;\n}\n\nconst eventMcpItems = $('MCP: exchange_get_new_events').all();\nconst eventData = unwrapMcp(eventMcpItems.length ? eventMcpItems : $input.all());\n\nif (eventData.is_initial) {\n  return [{ json: { type: 'none' } }];\n}\n\nconst events = eventData.events || [];\nconst output = [];\n\nfor (const event of events) {\n  output.push({ type: 'tg_event', text: formatEventText(event) });\n  const { uid, ical } = buildICal(event);\n  output.push({ type: 'caldav', uid, ical });\n}\n\nreturn output.length > 0\n  ? output.map((row) => ({ json: row }))\n  : [{ json: { type: 'none' } }];"
+        "jsCode": "function unwrapMcpPayload(raw) {\n  if (!raw || typeof raw !== 'object') return {};\n  if (raw.added !== undefined || raw.changed !== undefined || raw.deleted !== undefined || raw.events !== undefined || raw.is_initial !== undefined) {\n    return raw;\n  }\n  if (Array.isArray(raw.content) && raw.content.length > 0) {\n    const textPayload = raw.content[0].text;\n    if (textPayload && typeof textPayload === 'object') return textPayload;\n    if (typeof textPayload === 'string') {\n      try { return JSON.parse(textPayload); } catch { return {}; }\n    }\n  }\n  return raw;\n}\n\nfunction unwrapMcp(nodeItems) {\n  const item = (nodeItems && nodeItems[0]) ? nodeItems[0] : null;\n  if (!item) return {};\n  return unwrapMcpPayload(item.json ?? item);\n}\n\nfunction escHtml(value) {\n  return String(value || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\n}\n\nfunction formatMskTime(isoValue) {\n  if (!isoValue) return '??:??';\n  const dateValue = new Date(isoValue);\n  if (Number.isNaN(dateValue.getTime())) return '??:??';\n  return dateValue.toLocaleTimeString('ru-RU', {\n    timeZone: 'Europe/Moscow',\n    hour: '2-digit',\n    minute: '2-digit',\n    hour12: false,\n  });\n}\n\nfunction formatMskDate(isoValue) {\n  if (!isoValue) return '?';\n  const dateValue = new Date(isoValue);\n  if (Number.isNaN(dateValue.getTime())) return '?';\n  return dateValue.toLocaleDateString('ru-RU', {\n    timeZone: 'Europe/Moscow',\n    day: 'numeric',\n    month: 'short',\n  });\n}\n\nfunction sanitizeUid(rawUid) {\n  return String(rawUid || '').replace(/[^a-zA-Z0-9@._-]/g, '_');\n}\n\nfunction toICalUtc(isoValue) {\n  if (!isoValue) return '';\n  return new Date(isoValue).toISOString().replace(/[-:]/g, '').replace(/\\.\\d{3}/, '');\n}\n\nfunction icalEsc(value) {\n  return String(value || '').replace(/\\\\/g, '\\\\\\\\').replace(/;/g, '\\\\;').replace(/,/g, '\\\\,').replace(/[\\r\\n]+/g, '\\\\n');\n}\n\nfunction buildICal(event) {\n  const uid = sanitizeUid(event.uid || event.id || `ews-${Date.now()}`);\n  const dtstart = toICalUtc(event.start);\n  const dtend = toICalUtc(event.end);\n  const now = toICalUtc(new Date().toISOString());\n\n  let ical = 'BEGIN:VCALENDAR\\r\\n';\n  ical += 'VERSION:2.0\\r\\n';\n  ical += 'PRODID:-//Exchange MCP//EN\\r\\n';\n  ical += 'BEGIN:VEVENT\\r\\n';\n  ical += `UID:${uid}\\r\\n`;\n  ical += `DTSTAMP:${now}\\r\\n`;\n  ical += `DTSTART:${dtstart}\\r\\n`;\n  ical += `DTEND:${dtend}\\r\\n`;\n  ical += `SUMMARY:${icalEsc(event.subject)}\\r\\n`;\n  if (event.location) ical += `LOCATION:${icalEsc(event.location)}\\r\\n`;\n  if (event.organizer) ical += `ORGANIZER:mailto:${icalEsc(event.organizer)}\\r\\n`;\n  const attendees = Array.isArray(event.attendees) ? event.attendees : [];\n  for (const attendee of attendees) {\n    const address = typeof attendee === 'string' ? attendee : (attendee.email || attendee.name || '');\n    if (address) ical += `ATTENDEE:mailto:${icalEsc(address)}\\r\\n`;\n  }\n  if (event.body) ical += `DESCRIPTION:${icalEsc(String(event.body).substring(0, 500))}\\r\\n`;\n  if (event.all_day) ical += 'X-MICROSOFT-CDO-ALLDAYEVENT:TRUE\\r\\n';\n  ical += 'END:VEVENT\\r\\n';\n  ical += 'END:VCALENDAR\\r\\n';\n  return { uid, ical };\n}\n\nfunction formatEventText(event, prefix) {\n  const startTime = formatMskTime(event.start);\n  const endTime = formatMskTime(event.end);\n  const dateStr = formatMskDate(event.start);\n\n  let text = `${prefix} <b>${escHtml(event.subject || '(без темы)')}</b>\\n`;\n  text += `🕐 ${dateStr}, ${startTime}–${endTime} МСК\\n`;\n  if (event.location) text += `📍 ${escHtml(event.location)}\\n`;\n  if (event.organizer) text += `👤 ${escHtml(event.organizer)}\\n`;\n\n  const searchableText = `${event.body || ''} ${event.location || ''}`;\n  const meetingLink = searchableText.match(\n    /https:\\/\\/[\\w.-]*(?:zoom\\.us|telemost\\.yandex|meet\\.google|teams\\.microsoft)[^\\s<\"]*/i,\n  );\n  if (meetingLink) text += `🔗 ${meetingLink[0]}\\n`;\n\n  const attendees = Array.isArray(event.attendees) ? event.attendees : [];\n  if (attendees.length > 0) {\n    const names = attendees\n      .map((entry) => (typeof entry === 'string' ? entry : (entry.name || entry.email)))\n      .filter(Boolean)\n      .slice(0, 5);\n    if (names.length > 0) text += `👥 ${escHtml(names.join(', '))}\\n`;\n  }\n\n  if (event.body) {\n    const bodyPlain = String(event.body).replace(/<[^>]+>/g, ' ').replace(/\\s+/g, ' ').trim();\n    if (bodyPlain) text += `\\n\\n${escHtml(bodyPlain.slice(0, 800))}`;\n  }\n\n  return text;\n}\n\nconst eventMcpItems = $('MCP: exchange_get_new_events').all();\nconst eventData = unwrapMcp(eventMcpItems.length ? eventMcpItems : $input.all());\n\nif (eventData.is_initial) {\n  return [{ json: { type: 'none' } }];\n}\n\nconst addedEvents = Array.isArray(eventData.added) ? eventData.added : (eventData.events || []);\nconst changedEvents = Array.isArray(eventData.changed) ? eventData.changed : [];\nconst deletedEvents = Array.isArray(eventData.deleted) ? eventData.deleted : [];\nconst output = [];\n\nfor (const event of addedEvents) {\n  output.push({ type: 'tg_event', text: formatEventText(event, '📅') });\n  const { uid, ical } = buildICal(event);\n  output.push({ type: 'caldav', uid, ical });\n}\n\nfor (const event of changedEvents) {\n  output.push({ type: 'tg_event', text: formatEventText(event, '✏️') });\n  const { uid, ical } = buildICal(event);\n  output.push({ type: 'caldav', uid, ical });\n}\n\nfor (const deleted of deletedEvents) {\n  const uid = sanitizeUid(deleted.uid || deleted.server_id || '');\n  if (!uid) continue;\n  const subject = deleted.subject || '(без темы)';\n  output.push({\n    type: 'tg_event',\n    text: `❌ <b>Отмена:</b> ${escHtml(subject)}`,\n  });\n  output.push({ type: 'caldav_delete', uid });\n}\n\nreturn output.length > 0\n  ? output.map((row) => ({ json: row }))\n  : [{ json: { type: 'none' } }];\n"
       },
       "id": "a1b2c3d4-0005-4000-8000-000000000005",
       "name": "Format Events",
@@ -581,7 +581,7 @@
     },
     {
       "parameters": {
-        "content": "## Настройка\n\n- **MCP**: `http://46.173.19.68:8903/mcp/`, **Header Auth Exchange_work**\n- **Приглашения**: время встречи из `.ics` (parse_meeting_invites в MCP)\n- **Вложения**: binary → TG (без S3)\n- **CalDAV**: URL в ноде CalDAV PUT",
+        "content": "## Настройка\n\n- **MCP**: `http://46.173.19.68:8903/mcp/`, **Header Auth Exchange_work**\n- **CalDAV**: добавление / изменение (PUT) + отмена (DELETE)\n- **Первый запуск**: `is_initial` — прогрев state, без TG/CalDAV",
         "height": 380,
         "width": 520
       },
@@ -593,6 +593,69 @@
         -800,
         480
       ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "1",
+              "leftValue": "={{ $json.type }}",
+              "rightValue": "caldav_delete",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "a1b2c3d4-0021-4000-8000-000000000021",
+      "name": "Has CalDAV Delete?",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2,
+      "position": [
+        0,
+        680
+      ]
+    },
+    {
+      "parameters": {
+        "method": "DELETE",
+        "url": "=https://caldav.yandex.ru/calendars/superkerogaz%40yandex.ru/events-default/{{ $json.uid }}.ics",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "text"
+            }
+          },
+          "timeout": 15000
+        }
+      },
+      "id": "a1b2c3d4-0022-4000-8000-000000000022",
+      "name": "CalDAV DELETE from Yandex",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        280,
+        680
+      ],
+      "credentials": {
+        "httpBasicAuth": {
+          "id": "xMgPynwFvCerpDZe",
+          "name": "Yandex CalDAWS"
+        }
+      }
     }
   ],
   "pinData": {},
@@ -661,6 +724,11 @@
           },
           {
             "node": "Has CalDAV?",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Has CalDAV Delete?",
             "type": "main",
             "index": 0
           }
@@ -760,6 +828,17 @@
         [
           {
             "node": "CalDAV PUT to Yandex",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has CalDAV Delete?": {
+      "main": [
+        [
+          {
+            "node": "CalDAV DELETE from Yandex",
             "type": "main",
             "index": 0
           }

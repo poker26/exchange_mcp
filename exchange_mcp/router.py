@@ -15,7 +15,7 @@ import logging
 import os
 import threading
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Callable, Optional, TypeVar
 
 from .backends.base import (
@@ -40,6 +40,28 @@ _SAFETY_MARGIN = timedelta(minutes=5)
 _HEALTH_TTL = 60.0
 
 ReturnType = TypeVar("ReturnType")
+
+
+_CALENDAR_DELETE_LOOKBACK = timedelta(days=60)
+_CALENDAR_DELETE_LOOKAHEAD = timedelta(days=400)
+
+
+def _calendar_event_marker(event: CalendarItem) -> str:
+    if event.last_modified:
+        return event.last_modified.astimezone(timezone.utc).isoformat()
+    body_signature = (event.body or "")[:512]
+    start_value = event.start.isoformat() if event.start else ""
+    end_value = event.end.isoformat() if event.end else ""
+    return f"{start_value}|{end_value}|{event.subject}|{event.location}|{body_signature}"
+
+
+def _calendar_state_from_event(event: CalendarItem) -> dict:
+    return {
+        "marker": _calendar_event_marker(event),
+        "start": event.start.isoformat() if event.start else "",
+        "server_id": event.server_id,
+        "subject": event.subject,
+    }
 
 
 class MailRouter:
@@ -174,7 +196,7 @@ class MailRouter:
         self,
         folder_id: Optional[str],
         limit: int = 50,
-    ) -> tuple[list[CalendarItem], str, bool]:
+    ) -> tuple[list[CalendarItem], list[CalendarItem], list[dict], str, bool]:
         def _resolve_folder(ews: EWSBackend) -> str:
             return folder_id or ews.calendar_folder_id()
 
@@ -186,30 +208,119 @@ class MailRouter:
         is_initial = cursor is None
         since = (cursor - _SAFETY_MARGIN) if cursor else None
 
+        if is_initial:
+            def _seed(ews: EWSBackend) -> list[CalendarItem]:
+                now = datetime.now(timezone.utc)
+                return ews.get_calendar_items(
+                    folder_id,
+                    now - _CALENDAR_DELETE_LOOKBACK,
+                    now + _CALENDAR_DELETE_LOOKAHEAD,
+                    limit=500,
+                )
+
+            seed_items, _backend = self._execute("seed_calendar", _seed)
+            max_marker: Optional[datetime] = None
+            for event in seed_items:
+                if not event.uid:
+                    continue
+                self.state.set_calendar_event(
+                    state_key, event.uid, _calendar_state_from_event(event),
+                )
+                marker = event.last_modified or event.start
+                if marker and (max_marker is None or marker > max_marker):
+                    max_marker = marker
+            if max_marker is not None:
+                self.state.set_cursor(state_key, max_marker)
+            return [], [], [], "ews", True
+
+        known_events = self.state.get_calendar_events(state_key)
+        if not known_events and cursor is not None:
+            def _migrate_seed(ews: EWSBackend) -> list[CalendarItem]:
+                now = datetime.now(timezone.utc)
+                return ews.get_calendar_items(
+                    folder_id,
+                    now - _CALENDAR_DELETE_LOOKBACK,
+                    now + _CALENDAR_DELETE_LOOKAHEAD,
+                    limit=500,
+                )
+
+            seed_items, _backend = self._execute(
+                "migrate_calendar_state", _migrate_seed,
+            )
+            for event in seed_items:
+                if event.uid:
+                    self.state.set_calendar_event(
+                        state_key, event.uid, _calendar_state_from_event(event),
+                    )
+            known_events = self.state.get_calendar_events(state_key)
+
         def _fetch(ews: EWSBackend) -> list[CalendarItem]:
             return ews.get_calendar_items_since(folder_id, since, limit=limit)
 
         items, _backend = self._execute("get_new_calendar", _fetch)
 
-        new_items: list[CalendarItem] = []
-        new_uids: list[str] = []
+        known_events = self.state.get_calendar_events(state_key)
+        added_items: list[CalendarItem] = []
+        changed_items: list[CalendarItem] = []
+        deleted_items: list[dict] = []
         max_marker: Optional[datetime] = None
+
         for event in items:
-            if event.uid and self.state.contains(state_key, event.uid):
+            if not event.uid:
                 continue
-            new_items.append(event)
-            if event.uid:
-                new_uids.append(event.uid)
-            marker = event.last_modified or event.start
-            if marker and (max_marker is None or marker > max_marker):
-                max_marker = marker
+            marker_time = event.last_modified or event.start
+            if marker_time and (max_marker is None or marker_time > max_marker):
+                max_marker = marker_time
+
+            if event.is_cancelled:
+                if event.uid in known_events:
+                    deleted_items.append({
+                        "uid": event.uid,
+                        "server_id": known_events[event.uid].get("server_id", event.server_id),
+                        "subject": event.subject or known_events[event.uid].get("subject", ""),
+                        "reason": "cancelled",
+                    })
+                    self.state.remove_calendar_event(state_key, event.uid)
+                continue
+
+            marker = _calendar_event_marker(event)
+            previous = known_events.get(event.uid)
+            if previous is None:
+                added_items.append(event)
+            elif previous.get("marker") != marker:
+                changed_items.append(event)
+
+            self.state.set_calendar_event(
+                state_key, event.uid, _calendar_state_from_event(event),
+            )
+            known_events[event.uid] = _calendar_state_from_event(event)
+
+        now = datetime.now(timezone.utc)
+
+        def _list_uids(ews: EWSBackend) -> set[str]:
+            return ews.list_calendar_uids_in_range(
+                folder_id,
+                now - _CALENDAR_DELETE_LOOKBACK,
+                now + _CALENDAR_DELETE_LOOKAHEAD,
+                limit=500,
+            )
+
+        current_uids, _backend = self._execute("list_calendar_uids", _list_uids)
+        for uid, previous in list(known_events.items()):
+            if uid in current_uids:
+                continue
+            deleted_items.append({
+                "uid": uid,
+                "server_id": previous.get("server_id", ""),
+                "subject": previous.get("subject", ""),
+                "reason": "removed",
+            })
+            self.state.remove_calendar_event(state_key, uid)
 
         if max_marker is not None:
             self.state.set_cursor(state_key, max_marker)
-        if new_uids:
-            self.state.mark_seen(state_key, new_uids)
 
-        return new_items, "ews", is_initial
+        return added_items, changed_items, deleted_items, "ews", False
 
     def create_calendar_event(
         self,

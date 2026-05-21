@@ -70,6 +70,7 @@ class CalendarItem:
     all_day: bool = False
     body: str = ""
     attendees: list = field(default_factory=list)
+    is_cancelled: bool = False
 
     def to_dict(self) -> dict:
         return {
@@ -87,6 +88,7 @@ class CalendarItem:
             "all_day": self.all_day,
             "body": self.body,
             "attendees": self.attendees,
+            "is_cancelled": self.is_cancelled,
         }
 
 

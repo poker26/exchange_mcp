@@ -55,20 +55,25 @@ def exchange_get_new_events(
     folder_id: Optional[str] = None,
     max_items: int = 50,
 ) -> dict:
-    """Return new/changed calendar events since the last call (incremental).
+    """Return calendar changes since the last call (incremental).
 
-    Uses per-calendar-folder cursor + iCalendar UID dedup (EWS).
+    Returns added, changed, and deleted events. Uses per-calendar-folder
+    cursor plus UID + last-modified tracking (EWS).
     """
     max_items = max(1, min(int(max_items), 200))
-    items, backend, is_initial = router.get_new_calendar(
+    added, changed, deleted, backend, is_initial = router.get_new_calendar(
         folder_id, limit=max_items,
     )
+    upsert_events = added + changed
     return {
         "backend": backend,
         "folder_id": folder_id,
         "is_initial": is_initial,
-        "count": len(items),
-        "events": [event.to_dict() for event in items],
+        "count": len(upsert_events),
+        "added": [event.to_dict() for event in added],
+        "changed": [event.to_dict() for event in changed],
+        "deleted": deleted,
+        "events": [event.to_dict() for event in upsert_events],
     }
 
 

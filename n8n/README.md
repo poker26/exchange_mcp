@@ -6,26 +6,38 @@
 
 1. n8n → **Workflows** → **Import from file**
 2. MCP: `http://46.173.19.68:8903/mcp/`, credential **Header Auth Exchange_work**
-3. S3: credential **S3 account** (ваш MinIO), bucket **`exchange-mail-transit`**
-4. Telegram / Yandex CalDAV — как раньше
+3. Telegram / Yandex CalDAV — как раньше
 
 ## Схема
 
 ```
 Every 5 min ─┬─ MCP get_new_emails ─ Format ─┬─ TG текст письма
-             │                              └─ MCP list/get attachment ─ S3 upload ─ TG файл
-             └─ MCP get_new_events ─ Format ─┬─ TG событие
-                                            └─ CalDAV PUT
+             │                              └─ MCP list/get attachment ─ Attach Binary ─ TG файл
+             └─ MCP get_new_events ─ Format ─┬─ TG событие (📅 / ✏️ / ❌)
+                                            ├─ CalDAV PUT (новые и изменённые)
+                                            └─ CalDAV DELETE (отмена / удаление)
 ```
 
-## Вложения (S3 / MinIO)
+## Календарь → Yandex (полная синхronизация)
+
+MCP `exchange_get_new_events` возвращает:
+
+| Поле | Действие в n8n |
+|------|----------------|
+| `added` | 📅 Telegram + CalDAV PUT |
+| `changed` | ✏️ Telegram + CalDAV PUT (время, тема, описание, ссылки) |
+| `deleted` | ❌ Telegram + CalDAV DELETE |
+| `is_initial: true` | прогрев state, без TG/CalDAV (первый запуск) |
+
+Код Format Events: `format-events.js`. После правок — `python n8n/patch_workflow.py`.
+
+## Вложения
 
 Цепочка в n8n (без MinIO в exchange_mcp):
 
 1. `exchange_list_attachments(item_id)`
 2. `exchange_get_attachment` → base64
-3. **S3 Upload** → transit bucket (архив / TTL на стороне MinIO)
-4. **Telegram sendDocument** — из binary (не нужен публичный URL)
+3. **Attach Binary** → **Telegram sendDocument**
 
 Inline-картинки в HTML пропускаются; файловые вложения до **10 MB** (лимит EWS).
 
@@ -38,8 +50,7 @@ Inline-картинки в HTML пропускаются; файловые вл�
 | Было (EAS) | Стало |
 |------------|--------|
 | HTTP `/api/new_emails` | MCP `exchange_get_new_emails` |
-| presigned URL из easmcp | S3-нода n8n + ваш **S3 account** |
-| ICS из письма | нет |
-| CalDAV DELETE | нет (EWS incremental) |
+| HTTP `/api/new_events` | MCP `exchange_get_new_events` (added/changed/deleted) |
+| CalDAV PUT + DELETE | CalDAV PUT + DELETE (через Format Events) |
 
 Опционально в exchange_mcp остаётся `stage_attachments` + MinIO в `.env` — для n8n **не нужно**.

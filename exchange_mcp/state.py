@@ -22,20 +22,28 @@ _DEFAULT_LRU_SIZE = 2000
 
 
 class _FolderState:
-    __slots__ = ("cursor", "seen")
+    __slots__ = ("cursor", "seen", "calendar_events")
 
-    def __init__(self, cursor: Optional[str] = None,
-                 seen: Optional[Iterable[str]] = None,
-                 max_seen: int = _DEFAULT_LRU_SIZE):
+    def __init__(
+        self,
+        cursor: Optional[str] = None,
+        seen: Optional[Iterable[str]] = None,
+        max_seen: int = _DEFAULT_LRU_SIZE,
+        calendar_events: Optional[dict[str, dict]] = None,
+    ):
         # cursor is kept as an ISO-8601 string so it round-trips JSON cleanly.
         self.cursor: Optional[str] = cursor
         self.seen: OrderedDict[str, None] = OrderedDict()
         if seen:
             for mid in list(seen)[-max_seen:]:
                 self.seen[mid] = None
+        self.calendar_events: dict[str, dict] = dict(calendar_events or {})
 
     def to_dict(self) -> dict:
-        return {"cursor": self.cursor, "seen": list(self.seen.keys())}
+        payload = {"cursor": self.cursor, "seen": list(self.seen.keys())}
+        if self.calendar_events:
+            payload["calendar_events"] = self.calendar_events
+        return payload
 
 
 class SharedState:
@@ -71,6 +79,7 @@ class SharedState:
                 cursor=blob.get("cursor"),
                 seen=blob.get("seen") or [],
                 max_seen=self.max_seen,
+                calendar_events=blob.get("calendar_events") or {},
             )
         logger.info("Loaded state for %d folders from %s",
                     len(self._folders), self.path)
@@ -144,6 +153,38 @@ class SharedState:
             if changed:
                 self._save_locked()
 
+    def get_calendar_events(self, folder_id: str) -> dict[str, dict]:
+        with self._lock:
+            folder_state = self._folders.get(folder_id)
+            if not folder_state:
+                return {}
+            return dict(folder_state.calendar_events)
+
+    def set_calendar_event(
+        self,
+        folder_id: str,
+        uid: str,
+        event_state: dict,
+    ) -> None:
+        if not uid:
+            return
+        with self._lock:
+            folder_state = self._folders.setdefault(
+                folder_id, _FolderState(max_seen=self.max_seen),
+            )
+            folder_state.calendar_events[uid] = dict(event_state)
+            self._save_locked()
+
+    def remove_calendar_event(self, folder_id: str, uid: str) -> None:
+        if not uid:
+            return
+        with self._lock:
+            folder_state = self._folders.get(folder_id)
+            if not folder_state or uid not in folder_state.calendar_events:
+                return
+            del folder_state.calendar_events[uid]
+            self._save_locked()
+
     def snapshot(self) -> dict:
         """Return a JSON-serializable snapshot (for /health and debugging)."""
         with self._lock:
@@ -151,6 +192,7 @@ class SharedState:
                 fid: {
                     "cursor": fs.cursor,
                     "seen_count": len(fs.seen),
+                    "calendar_events_count": len(fs.calendar_events),
                 }
                 for fid, fs in self._folders.items()
             }

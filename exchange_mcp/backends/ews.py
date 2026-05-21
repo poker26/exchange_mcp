@@ -600,6 +600,7 @@ class EWSBackend:
                 "body",
                 "required_attendees",
                 "optional_attendees",
+                "is_cancelled",
             ]
             query_set = (
                 folder.view(
@@ -642,6 +643,40 @@ class EWSBackend:
             reverse=True,
         )
         return filtered[:limit]
+
+    def list_calendar_uids_in_range(
+        self,
+        folder_id: Optional[str],
+        date_from: datetime,
+        date_to: datetime,
+        limit: int = 500,
+    ) -> set[str]:
+        def _fetch() -> set[str]:
+            account = self._account_or_raise()
+            if folder_id:
+                try:
+                    folder = account.root.get_folder(_folder_id_type()(id=folder_id))
+                except Exception as exc:
+                    raise BackendError(f"folder lookup failed: {exc}") from exc
+            else:
+                folder = account.calendar
+
+            query_set = (
+                folder.view(
+                    start=_to_ews_datetime(date_from),
+                    end=_to_ews_datetime(date_to),
+                )
+                .only("uid")
+            )
+            query_set = query_set[: max(1, min(limit, 500))]
+            uids: set[str] = set()
+            for event in query_set:
+                uid = getattr(event, "uid", "") or ""
+                if uid:
+                    uids.add(uid)
+            return uids
+
+        return self._run_serialized("list_calendar_uids_in_range", _fetch)
 
     def create_calendar_event(
         self,
@@ -940,6 +975,7 @@ class EWSBackend:
             all_day=bool(getattr(event, "is_all_day", False)),
             body=body_text,
             attendees=attendees,
+            is_cancelled=bool(getattr(event, "is_cancelled", False)),
         )
 
     @staticmethod
