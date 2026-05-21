@@ -27,4 +27,27 @@ def exchange_get_attachment(item_id: str, attachment_id: str) -> dict:
     return result
 
 
-TOOLS = [exchange_list_attachments, exchange_get_attachment]
+def exchange_stage_email_attachments(
+    item_id: str,
+    attachment_presign_ttl: int = 86400,
+    include_inline: bool = False,
+) -> dict:
+    """Download all file attachments for an email, upload to MinIO, presign.
+
+    Requires MinIO env vars on the server. Skips inline parts by default.
+    """
+    ttl = max(60, min(int(attachment_presign_ttl), 604800))
+    staged, backend = router.stage_email_attachments(
+        item_id,
+        expires_seconds=ttl,
+        include_inline=include_inline,
+    )
+    return {
+        "backend": backend,
+        "item_id": item_id,
+        "count": len(staged),
+        "attachments": staged,
+    }
+
+
+TOOLS = [exchange_list_attachments, exchange_get_attachment, exchange_stage_email_attachments]

@@ -10,6 +10,7 @@ State flow for `get_new_mail`:
 """
 from __future__ import annotations
 
+import base64
 import logging
 import os
 import threading
@@ -29,6 +30,8 @@ from .backends.base import (
 )
 from .backends.ews import EWSBackend
 from .config import settings
+from . import minio_stage
+from .meeting_invite import looks_like_meeting_invite, parse_vevent_from_ics
 from .state import SharedState
 
 logger = logging.getLogger(__name__)
@@ -366,6 +369,97 @@ class MailRouter:
 
         data, _backend = self._execute("get_attachment", _fetch)
         return data, "ews"
+
+    def parse_meeting_invite(
+        self,
+        item_id: str,
+        body: str = "",
+        subject: str = "",
+        has_attachments: bool = False,
+    ) -> Optional[dict]:
+        """Extract meeting start/end from embedded or attached iCalendar data."""
+        if body and "BEGIN:VEVENT" in body:
+            parsed = parse_vevent_from_ics(body)
+            if parsed:
+                return parsed
+
+        if not has_attachments:
+            return None
+
+        attachment_infos, _backend = self.list_attachments(item_id)
+        for info in attachment_infos:
+            name_lower = (info.name or "").lower()
+            content_type = (info.content_type or "").lower()
+            is_calendar = (
+                name_lower.endswith(".ics")
+                or "text/calendar" in content_type
+                or "application/ics" in content_type
+            )
+            if not is_calendar:
+                continue
+            try:
+                data, _ = self.get_attachment(item_id, info.attachment_id)
+                ics_bytes = base64.b64decode(data.content_base64)
+                ics_text = ics_bytes.decode("utf-8", errors="replace")
+                parsed = parse_vevent_from_ics(ics_text)
+                if parsed:
+                    return parsed
+            except Exception as exc:
+                logger.warning(
+                    "Failed to parse calendar attachment %r on %s: %s",
+                    info.name,
+                    item_id,
+                    exc,
+                )
+        return None
+
+    def stage_email_attachments(
+        self,
+        item_id: str,
+        expires_seconds: Optional[int] = None,
+        include_inline: bool = False,
+    ) -> tuple[list[dict], str]:
+        """Download attachments from EWS, upload to MinIO, return presigned URLs."""
+        if not minio_stage.minio_is_configured():
+            raise BackendError(
+                "MinIO is not configured (MINIO_ENDPOINT, MINIO_ACCESS_KEY, "
+                "MINIO_SECRET_KEY, MINIO_BUCKET)",
+            )
+
+        attachment_infos, backend = self.list_attachments(item_id)
+        staged: list[dict] = []
+        ttl = expires_seconds if expires_seconds is not None else settings.minio_presign_ttl_seconds
+
+        for info in attachment_infos:
+            if info.is_inline and not include_inline:
+                continue
+            row = {
+                **info.to_dict(),
+                "display_name": info.name,
+                "presigned_url": "",
+            }
+            try:
+                data, _ = self.get_attachment(item_id, info.attachment_id)
+                raw_bytes = base64.b64decode(data.content_base64)
+                object_key = minio_stage.build_object_key(item_id, info.name)
+                row["presigned_url"] = minio_stage.upload_bytes(
+                    raw_bytes,
+                    object_key,
+                    info.content_type,
+                    expires_seconds=ttl,
+                )
+                row["object_key"] = object_key
+            except Exception as exc:
+                logger.warning(
+                    "Failed to stage attachment %r on %s: %s",
+                    info.name,
+                    item_id,
+                    exc,
+                )
+                row["error"] = str(exc)
+            staged.append(row)
+
+        return staged, backend
 
     def send_email(
         self,

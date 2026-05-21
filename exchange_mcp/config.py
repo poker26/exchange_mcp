@@ -31,6 +31,14 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     public_url: str = ""
 
+    # Optional MinIO — staging email attachments for Telegram / n8n
+    minio_endpoint: str = ""
+    minio_access_key: str = ""
+    minio_secret_key: str = ""
+    minio_bucket: str = "exchange-mail-transit"
+    minio_secure: bool = False
+    minio_presign_ttl_seconds: int = 86400
+
     @property
     def verify(self) -> bool | str:
         """Turn SSL_VERIFY into what httpx / exchangelib / requests expect."""

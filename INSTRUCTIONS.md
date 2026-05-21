@@ -116,6 +116,23 @@ docker compose logs -f --tail=200 exchange-mcp
 }
 ```
 
+## MinIO (вложения для n8n / Telegram)
+
+Опционально. Если заданы `MINIO_*` в `.env`, tool `exchange_get_new_emails` с
+`stage_attachments=true` кладёт файлы во временный bucket и добавляет
+`presigned_url` в каждый элемент `attachments`.
+
+```env
+MINIO_ENDPOINT=host:9000
+MINIO_ACCESS_KEY=...
+MINIO_SECRET_KEY=...
+MINIO_BUCKET=exchange-mail-transit
+MINIO_SECURE=false
+MINIO_PRESIGN_TTL_SECONDS=86400
+```
+
+Presigned URL должен быть доступен с интернета — Telegram скачивает вложение сам.
+
 ## Обновление
 
 Windows: правки → `git push`. На сервере:

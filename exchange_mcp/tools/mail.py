@@ -15,6 +15,9 @@ def exchange_get_new_emails(
     folder_id: Optional[str] = None,
     max_items: int = 50,
     include_body: bool = True,
+    stage_attachments: bool = False,
+    attachment_presign_ttl: int = 86400,
+    parse_meeting_invites: bool = True,
 ) -> dict:
     """Return new emails since the last call (incremental, per-folder).
 
@@ -24,18 +27,59 @@ def exchange_get_new_emails(
         folder_id: folder id from `exchange_list_folders`; defaults to Inbox.
         max_items: max emails to return (1-200).
         include_body: include text body (default True).
+        stage_attachments: if True and MinIO is configured, upload file
+            attachments to MinIO and add `presigned_url` on each entry in
+            `attachments` (for Telegram / n8n).
+        attachment_presign_ttl: presigned GET TTL in seconds (60–604800).
+        parse_meeting_invites: if True, parse iCalendar from body / .ics
+            attachments and add a `meeting` object with start/end/location.
     """
+    from ..meeting_invite import looks_like_meeting_invite
+
     max_items = max(1, min(int(max_items), 200))
+    ttl = max(60, min(int(attachment_presign_ttl), 604800))
     fid = folder_id or _inbox_id_or_raise()
     items, backend, is_initial = router.get_new_mail(
         fid, limit=max_items, include_body=include_body,
     )
+
+    emails_out: list[dict] = []
+    for mail_item in items:
+        row = mail_item.to_dict()
+        if parse_meeting_invites and looks_like_meeting_invite(
+            mail_item.subject,
+            mail_item.body,
+            mail_item.has_attachments,
+        ):
+            try:
+                meeting = router.parse_meeting_invite(
+                    mail_item.server_id,
+                    body=mail_item.body,
+                    subject=mail_item.subject,
+                    has_attachments=mail_item.has_attachments,
+                )
+                if meeting:
+                    row["meeting"] = meeting
+            except BackendError as exc:
+                row["meeting_error"] = str(exc)
+        if stage_attachments and mail_item.has_attachments:
+            try:
+                staged, _ = router.stage_email_attachments(
+                    mail_item.server_id,
+                    expires_seconds=ttl,
+                )
+                row["attachments"] = staged
+            except BackendError as exc:
+                row["attachments"] = []
+                row["attachments_error"] = str(exc)
+        emails_out.append(row)
+
     return {
         "backend": backend,
         "folder_id": fid,
         "is_initial": is_initial,
         "count": len(items),
-        "emails": [m.to_dict() for m in items],
+        "emails": emails_out,
     }
 
 
