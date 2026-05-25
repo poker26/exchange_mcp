@@ -80,18 +80,30 @@ def collect_unique_emails(raw_addresses: list[str]) -> list[str]:
     return result
 
 
-def pick_preferred_email(emails: list[str], organizer_email: str) -> str:
+def parse_accepted_domains(raw_value: str) -> list[str]:
+    domains: list[str] = []
+    for part in (raw_value or "").split(","):
+        domain = part.strip().lower().lstrip("@")
+        if domain and domain not in domains:
+            domains.append(domain)
+    return domains
+
+
+def pick_preferred_email(
+    emails: list[str],
+    organizer_email: str,
+    accepted_domains: Optional[list[str]] = None,
+) -> str:
     if not emails:
         return ""
-    organizer_normalized = normalize_email_address(organizer_email)
-    organizer_domain = (
-        organizer_normalized.split("@")[-1]
-        if "@" in organizer_normalized
-        else ""
-    )
-    if organizer_domain:
+    domains_to_try = list(accepted_domains or [])
+    if not domains_to_try:
+        organizer_normalized = normalize_email_address(organizer_email)
+        if "@" in organizer_normalized:
+            domains_to_try.append(organizer_normalized.split("@", 1)[1])
+    for domain in domains_to_try:
         for email in emails:
-            if email.split("@")[-1] == organizer_domain:
+            if email.split("@", 1)[-1] == domain:
                 return email
     return emails[0]
 

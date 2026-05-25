@@ -46,18 +46,21 @@ Endpoints:
 - `GET /health` — EWS reachability (no auth)
 - `POST /mcp` — MCP transport (`X-API-Key` or `Authorization: Bearer …`)
 
-## Status (v0.4)
+## Status (v0.6)
 
 Working (EWS):
 
 - Mail: list/new/get/search/send, mark read, delete, move, reply, forward
 - Calendar: get/new/create/update, respond (accept/decline/tentative)
+- Calendar delete: single occurrence or entire series (`delete_series`)
 - Scheduling: search contacts, get availability, suggest meeting times (see `AGENTS.md`)
 - Contacts, folders, list/download attachments (10 MB cap)
 
 Calendar update: see `docs/rfc/0001-calendar-update-reschedule.md`.
 
-TODO: REST mirror, automated tests.
+Run tests: `pytest`
+
+TODO: REST mirror.
 
 ## Design notes
 

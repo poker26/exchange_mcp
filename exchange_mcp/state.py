@@ -216,6 +216,9 @@ class SharedState:
         subject: str,
         start_iso: str,
         end_iso: str,
+        *,
+        delete_series: bool = False,
+        recurrence_role: str = "single",
     ) -> dict:
         """Register a delete intent; returns confirmation payload for the user."""
         now = datetime.now(timezone.utc)
@@ -226,6 +229,8 @@ class SharedState:
             "subject": subject,
             "start": start_iso,
             "end": end_iso,
+            "delete_series": bool(delete_series),
+            "recurrence_role": recurrence_role,
             "required_phrase": _DELETE_USER_PHRASE,
             "created_at": now.isoformat(),
             "expires_at": (now + _DELETE_CONFIRMATION_TTL).isoformat(),
@@ -241,6 +246,8 @@ class SharedState:
         confirmation_id: str,
         event_id: str,
         user_confirmation: str,
+        *,
+        delete_series: bool = False,
     ) -> dict:
         """Validate and remove a pending delete. Raises ValueError on failure."""
         with self._lock:
@@ -254,6 +261,11 @@ class SharedState:
             if pending.get("event_id") != event_id:
                 raise ValueError(
                     "EVENT_ID_MISMATCH: event_id does not match prepared deletion",
+                )
+            if bool(pending.get("delete_series")) != bool(delete_series):
+                raise ValueError(
+                    "DELETE_SERIES_MISMATCH: delete_series must match "
+                    "exchange_prepare_delete_event",
                 )
             if (user_confirmation or "").strip() != _DELETE_USER_PHRASE:
                 raise ValueError(

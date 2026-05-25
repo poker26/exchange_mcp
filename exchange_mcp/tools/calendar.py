@@ -253,23 +253,36 @@ def exchange_suggest_meeting_times(
     }
 
 
-def exchange_prepare_delete_event(event_id: str) -> dict:
+def exchange_prepare_delete_event(
+    event_id: str,
+    delete_series: bool = False,
+) -> dict:
     """Step 1/2: preview a calendar deletion and obtain a confirmation_id.
 
     DANGEROUS workflow guard: do NOT call `exchange_delete_event` until the
     user has read the preview and replied in chat with the exact phrase
     returned in `required_phrase` (default: «ДА, УДАЛИТЬ»).
+
+    For recurring events: pass occurrence ``event_id`` to remove one instance.
+    Pass ``delete_series=true`` with the series master id to remove all future
+    occurrences.
     """
     try:
-        pending, backend = router.prepare_delete_calendar_event(event_id)
+        pending, backend = router.prepare_delete_calendar_event(
+            event_id,
+            delete_series=delete_series,
+        )
     except CalendarUpdateError as exc:
         return {"error": True, "code": exc.code, "message": str(exc)}
+    scope = "entire series" if pending.get("delete_series") else "this occurrence"
     return {
         "backend": backend,
         "status": "awaiting_confirmation",
         "confirmation_id": pending["confirmation_id"],
         "required_phrase": pending["required_phrase"],
         "expires_at": pending["expires_at"],
+        "delete_series": pending.get("delete_series", False),
+        "recurrence_role": pending.get("recurrence_role", "single"),
         "event": {
             "id": pending["event_id"],
             "subject": pending["subject"],
@@ -277,10 +290,11 @@ def exchange_prepare_delete_event(event_id: str) -> dict:
             "end": pending["end"],
         },
         "instructions": (
-            "Show the user the event summary. Only after they type the "
-            f"exact phrase {pending['required_phrase']!r} in the chat, call "
+            "Show the user the event summary and deletion scope "
+            f"({scope}). Only after they type the exact phrase "
+            f"{pending['required_phrase']!r} in the chat, call "
             "exchange_delete_event with the same confirmation_id, event_id, "
-            "and user_confirmation equal to that phrase."
+            "delete_series, and user_confirmation equal to that phrase."
         ),
     }
 
@@ -289,16 +303,21 @@ def exchange_delete_event(
     event_id: str,
     confirmation_id: str,
     user_confirmation: str,
+    delete_series: bool = False,
 ) -> dict:
     """Step 2/2: delete a calendar event after explicit user confirmation.
 
     Requires a fresh `confirmation_id` from `exchange_prepare_delete_event`
     (valid ~10 minutes). `user_confirmation` must match `required_phrase`
     exactly — the phrase the user typed in chat, e.g. «ДА, УДАЛИТЬ».
+    ``delete_series`` must match the value used in prepare.
     """
     try:
         backend = router.delete_calendar_event(
-            event_id, confirmation_id, user_confirmation,
+            event_id,
+            confirmation_id,
+            user_confirmation,
+            delete_series=delete_series,
         )
     except CalendarUpdateError as exc:
         return {"error": True, "code": exc.code, "message": str(exc)}

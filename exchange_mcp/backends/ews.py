@@ -16,6 +16,11 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
+from ..calendar_recurrence import (
+    classify_calendar_recurrence_role,
+    extract_recurring_master_id,
+    is_series_master_role,
+)
 from ..config import settings
 from ..datetime_util import parse_iso_datetime
 from ..scheduling_util import (
@@ -487,12 +492,6 @@ class EWSBackend:
                     f"item {event_id!r} is not a calendar event",
                 )
 
-            if getattr(item, "recurrence", None) is not None:
-                raise CalendarUpdateError(
-                    "RECURRENCE_UNSUPPORTED",
-                    "recurring events cannot be updated yet; edit in Outlook",
-                )
-
             changed_fields: list[str] = []
 
             if subject is not None and subject.strip():
@@ -566,6 +565,7 @@ class EWSBackend:
         event_id: str,
         *,
         send_cancellation: bool = True,
+        delete_series: bool = False,
     ) -> None:
         def _delete() -> None:
             from exchangelib import CalendarItem as EwsCalendarItem  # type: ignore[import-not-found]
@@ -590,10 +590,12 @@ class EWSBackend:
                     f"item {event_id!r} is not a calendar event",
                 )
 
-            if getattr(item, "recurrence", None) is not None:
+            recurrence_role = classify_calendar_recurrence_role(item)
+            if is_series_master_role(recurrence_role) and not delete_series:
                 raise CalendarUpdateError(
-                    "RECURRENCE_UNSUPPORTED",
-                    "recurring events cannot be deleted via MCP yet",
+                    "RECURRENCE_SCOPE_REQUIRED",
+                    "recurring series master: use occurrence event_id to delete one "
+                    "instance, or delete_series=true to remove the entire series",
                 )
 
             has_attendees = bool(
@@ -688,6 +690,8 @@ class EWSBackend:
                 "required_attendees",
                 "optional_attendees",
                 "is_cancelled",
+                "type",
+                "recurring_master_id",
             ]
             query_set = (
                 folder.view(
@@ -1261,6 +1265,9 @@ class EWSBackend:
         if last_modified_value is not None:
             last_modified_value = _to_plain_utc_datetime(last_modified_value)
 
+        recurrence_role = classify_calendar_recurrence_role(event)
+        recurring_master_id = extract_recurring_master_id(event)
+
         return CalendarItem(
             backend="ews",
             server_id=str(event.id),
@@ -1275,6 +1282,8 @@ class EWSBackend:
             body=body_text,
             attendees=attendees,
             is_cancelled=bool(getattr(event, "is_cancelled", False)),
+            recurrence_role=recurrence_role,
+            recurring_master_id=recurring_master_id,
         )
 
     @staticmethod
@@ -1291,7 +1300,11 @@ class EWSBackend:
 
         organizer_email = (settings.exchange_email or "").strip()
         emails = collect_unique_emails(raw_addresses)
-        email_address = pick_preferred_email(emails, organizer_email)
+        email_address = pick_preferred_email(
+            emails,
+            organizer_email,
+            settings.accepted_email_domains,
+        )
 
         phone_number = ""
         for entry in getattr(contact, "phone_numbers", None) or []:

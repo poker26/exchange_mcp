@@ -470,7 +470,12 @@ class MailRouter:
         item, _backend = self._execute("update_calendar_event", _update)
         return item, "ews"
 
-    def prepare_delete_calendar_event(self, event_id: str) -> tuple[dict, str]:
+    def prepare_delete_calendar_event(
+        self,
+        event_id: str,
+        *,
+        delete_series: bool = False,
+    ) -> tuple[dict, str]:
         def _fetch(ews: EWSBackend) -> CalendarItem:
             return ews.get_calendar_event_by_id(event_id)
 
@@ -480,6 +485,8 @@ class MailRouter:
             subject=event.subject,
             start_iso=event.start.isoformat() if event.start else "",
             end_iso=event.end.isoformat() if event.end else "",
+            delete_series=delete_series,
+            recurrence_role=event.recurrence_role,
         )
         return pending, "ews"
 
@@ -488,10 +495,15 @@ class MailRouter:
         event_id: str,
         confirmation_id: str,
         user_confirmation: str,
+        *,
+        delete_series: bool = False,
     ) -> str:
         try:
             self.state.consume_pending_event_deletion(
-                confirmation_id, event_id, user_confirmation,
+                confirmation_id,
+                event_id,
+                user_confirmation,
+                delete_series=delete_series,
             )
         except ValueError as exc:
             raise CalendarUpdateError(
@@ -500,7 +512,7 @@ class MailRouter:
             ) from exc
 
         def _delete(ews: EWSBackend) -> None:
-            ews.delete_calendar_event(event_id)
+            ews.delete_calendar_event(event_id, delete_series=delete_series)
 
         self._execute("delete_calendar_event", _delete)
         return "ews"

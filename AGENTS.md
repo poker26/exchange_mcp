@@ -99,8 +99,10 @@ Per-attendee проблемы — в `errors[]`, запрос не падает 
 **Никогда** не вызывайте `exchange_delete_event` без явного согласия пользователя в чате.
 
 1. `exchange_prepare_delete_event(event_id)` — показать пользователю preview (`subject`, `start`, `end`) и `confirmation_id`.
+   - Для **одного occurrence** серии — `event_id` конкретного экземпляра из `exchange_get_calendar`.
+   - Для **всей серии** — `delete_series=true` и id master-события.
 2. Дождаться, пока пользователь **сам напишет** в чате точную фразу из `required_phrase` (по умолчанию **`ДА, УДАЛИТЬ`**).
-3. `exchange_delete_event(event_id, confirmation_id, user_confirmation="ДА, УДАЛИТЬ")` — только с той же фразой.
+3. `exchange_delete_event(event_id, confirmation_id, user_confirmation="ДА, УДАЛИТЬ", delete_series=...)` — с теми же `event_id` и `delete_series`, что в prepare.
 
 Без шага 1–2 сервер вернёт `CONFIRMATION_EXPIRED_OR_UNKNOWN` или `USER_CONFIRMATION_REQUIRED`.
 
@@ -117,8 +119,10 @@ Per-attendee проблемы — в `errors[]`, запрос не падает 
 
 - **Free/busy** запрашивается у Exchange для любого SMTP; `calendar_status: external` — только когда EWS явно отказал (Gmail/Yandex и т.п.).
 - Агент видит **занятость**, не темы чужих встреч (политика Exchange).
-- Повторяющиеся серии при `exchange_update_event` пока не поддерживаются (`RECURRENCE_UNSUPPORTED`).
+- **`recurrence_role`** в ответах календаря: `single`, `occurrence`, `exception`, `series_master`.
+- `exchange_update_event` работает для одиночных событий и отдельных occurrence; правило повторения (RRULE) не редактируется.
 - Окно availability/suggest — **максимум 14 дней**.
+- **`ORG_ACCEPTED_DOMAINS`** в `.env` — список «своих» SMTP-доменов для выбора email в `search_contacts` (default: домен организатора).
 
 ## Пример вызовов
 
@@ -164,7 +168,14 @@ Per-attendee проблемы — в `errors[]`, запрос не падает 
 | `INVALID_TIMEZONE` | Неизвестная IANA TZ |
 | `EWS_FAULT` | Сбой Exchange (на уровне запроса) |
 
-## Деплой и обновление схемы MCP
+## Коды ошибок календаря (delete/update)
+
+| Код | Значение |
+| --- | --- |
+| `RECURRENCE_SCOPE_REQUIRED` | Удаление master-серии без `delete_series=true` |
+| `DELETE_SERIES_MISMATCH` | `delete_series` в delete не совпал с prepare |
+| `CONFIRMATION_EXPIRED_OR_UNKNOWN` | Нет или протух `confirmation_id` |
+| `USER_CONFIRMATION_REQUIRED` | Пользователь не написал фразу подтверждения |
 
 После `git pull` на сервере: `docker compose up -d --build`, затем **Reload MCP** в Cursor.
 

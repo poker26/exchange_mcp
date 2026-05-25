@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     # EWS tuning
     ews_folders_cache_ttl: float = 300.0
     calendar_timezone: str = "Europe/Moscow"
+    org_accepted_domains: str = ""
 
     # State
     state_dir: str = "/app/state"
@@ -54,6 +55,19 @@ class Settings(BaseSettings):
     @property
     def ews_effective_url(self) -> str:
         return self.ews_url or f"https://{self.exchange_host}/EWS/Exchange.asmx"
+
+    @property
+    def accepted_email_domains(self) -> list[str]:
+        """Internal org SMTP domains for contact email preference."""
+        from .scheduling_util import parse_accepted_domains
+
+        configured = parse_accepted_domains(self.org_accepted_domains)
+        if configured:
+            return configured
+        organizer_email = (self.exchange_email or "").strip().lower()
+        if "@" in organizer_email:
+            return [organizer_email.split("@", 1)[1]]
+        return []
 
 
 settings = Settings()  # type: ignore[call-arg]

@@ -71,9 +71,11 @@ class CalendarItem:
     body: str = ""
     attendees: list = field(default_factory=list)
     is_cancelled: bool = False
+    recurrence_role: str = "single"
+    recurring_master_id: str = ""
 
     def to_dict(self) -> dict:
-        return {
+        payload = {
             "backend": self.backend,
             "id": self.server_id,
             "uid": self.uid,
@@ -90,6 +92,11 @@ class CalendarItem:
             "attendees": self.attendees,
             "is_cancelled": self.is_cancelled,
         }
+        if self.recurrence_role != "single":
+            payload["recurrence_role"] = self.recurrence_role
+        if self.recurring_master_id:
+            payload["recurring_master_id"] = self.recurring_master_id
+        return payload
 
 
 @dataclass

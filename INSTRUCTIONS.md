@@ -69,6 +69,15 @@ nano .env
 
 В `.env`: `EXCHANGE_PASSWORD`, `MCP_API_KEY`, `STATE_DIR=/app/state`, `SERVER_HOST=0.0.0.0`.
 
+Опционально для планирования встреч:
+
+```env
+ORG_ACCEPTED_DOMAINS=fin-frame.ru,inplatlabs.ru,instant-pay.ru
+CALENDAR_TIMEZONE=Europe/Moscow
+```
+
+`ORG_ACCEPTED_DOMAINS` — приоритет SMTP-доменов в `exchange_search_contacts` (если пусто — домен `EXCHANGE_EMAIL`).
+
 ```bash
 docker compose up -d --build
 docker compose logs -f exchange-mcp
