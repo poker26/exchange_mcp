@@ -19,9 +19,11 @@ from typing import Optional
 from ..config import settings
 from ..datetime_util import parse_iso_datetime
 from ..scheduling_util import (
+    collect_unique_emails,
     map_ews_busy_status,
     minutes_since_midnight_to_hhmm,
     normalize_email_address,
+    pick_preferred_email,
     weekday_names_to_strings,
 )
 from .base import (
@@ -98,13 +100,6 @@ def _to_ews_datetime(value: datetime) -> datetime:
     if value.tzinfo is None:
         value = value.replace(tzinfo=timezone.utc)
     return EWSDateTime.from_datetime(value)
-
-
-def _normalize_smtp_address(value: str) -> str:
-    text = (value or "").strip()
-    if text.upper().startswith("SMTP:"):
-        return text[5:].strip()
-    return text
 
 
 def _to_plain_utc_datetime(value: datetime) -> datetime:
@@ -887,7 +882,7 @@ class EWSBackend:
                         if contact is not None:
                             add_contact(self._to_contact_item(contact))
                         elif mailbox is not None:
-                            email_address = _normalize_smtp_address(
+                            email_address = normalize_email_address(
                                 getattr(mailbox, "email_address", "") or "",
                             )
                             add_contact(ContactItem(
@@ -895,9 +890,10 @@ class EWSBackend:
                                 server_id=email_address,
                                 display_name=getattr(mailbox, "name", "") or email_address,
                                 email=email_address,
+                                emails=[email_address] if email_address else [],
                             ))
                     elif entry is not None:
-                        email_address = _normalize_smtp_address(
+                        email_address = normalize_email_address(
                             getattr(entry, "email_address", "") or "",
                         )
                         add_contact(ContactItem(
@@ -905,6 +901,7 @@ class EWSBackend:
                             server_id=email_address,
                             display_name=getattr(entry, "name", "") or email_address,
                             email=email_address,
+                            emails=[email_address] if email_address else [],
                         ))
             except Exception as exc:
                 logger.debug("ResolveNames failed for %r: %s", search_text, exc)
@@ -948,9 +945,6 @@ class EWSBackend:
             organizer_email = normalize_email_address(
                 (settings.exchange_email or "").strip(),
             )
-            organizer_domain = (
-                organizer_email.split("@")[-1] if "@" in organizer_email else ""
-            )
 
             ews_start = _to_ews_datetime(window_start)
             ews_end = _to_ews_datetime(window_end)
@@ -966,27 +960,7 @@ class EWSBackend:
 
             for index, email in enumerate(attendees):
                 normalized = normalize_email_address(email)
-                attendee_domain = (
-                    normalized.split("@")[-1] if "@" in normalized else ""
-                )
                 role = "organizer" if index == 0 or normalized == organizer_email else "required"
-                if (
-                    organizer_domain
-                    and attendee_domain
-                    and attendee_domain != organizer_domain
-                ):
-                    availability_rows.append(AttendeeAvailability(
-                        email=normalized,
-                        role=role,
-                        calendar_status="external",
-                        busy=[],
-                    ))
-                    error_rows.append({
-                        "email": normalized,
-                        "code": "EXTERNAL_ATTENDEE",
-                        "message": "free/busy unavailable for external mailbox",
-                    })
-                    continue
 
                 attendee_type = "Organizer" if role == "organizer" else "Required"
                 if role == "organizer":
@@ -1026,7 +1000,15 @@ class EWSBackend:
 
                     calendar_status = "ok"
                     view_type = str(getattr(view, "view_type", "") or "")
-                    if "None" in view_type or view_type == "":
+                    view_type_lower = view_type.lower()
+                    if "permission" in view_type_lower or "denied" in view_type_lower:
+                        calendar_status = "external"
+                        error_rows.append({
+                            "email": email,
+                            "code": "EXTERNAL_ATTENDEE",
+                            "message": "free/busy unavailable for external mailbox",
+                        })
+                    elif "none" in view_type_lower or view_type == "":
                         calendar_status = "not_found"
 
                     busy_intervals: list[BusyInterval] = []
@@ -1297,15 +1279,19 @@ class EWSBackend:
 
     @staticmethod
     def _to_contact_item(contact) -> ContactItem:
-        email_address = ""
+        raw_addresses: list[str] = []
         for entry in getattr(contact, "email_addresses", None) or []:
-            email_address = (
+            raw_value = (
                 getattr(entry, "email", "")
                 or getattr(entry, "email_address", "")
                 or str(entry)
             )
-            if email_address:
-                break
+            if raw_value:
+                raw_addresses.append(raw_value)
+
+        organizer_email = (settings.exchange_email or "").strip()
+        emails = collect_unique_emails(raw_addresses)
+        email_address = pick_preferred_email(emails, organizer_email)
 
         phone_number = ""
         for entry in getattr(contact, "phone_numbers", None) or []:
@@ -1318,6 +1304,7 @@ class EWSBackend:
             server_id=str(contact.id),
             display_name=getattr(contact, "display_name", "") or "",
             email=email_address,
+            emails=emails,
             phone=phone_number,
             company=getattr(contact, "company_name", "") or "",
         )

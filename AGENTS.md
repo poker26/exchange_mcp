@@ -9,8 +9,12 @@
 ## Рекомендуемый pipeline
 
 ```
-1. exchange_search_contacts("иванов")     → email
+1. exchange_search_contacts("иванов")     → email (+ emails[] если несколько)
 2. exchange_search_contacts("петров")     → email
+   └─ если emails[] содержит разные домены (instant-pay.ru vs fin-frame.ru):
+      • предпочитайте домен организатора (поле email уже выбрано автоматически)
+      • при сомнении: exchange_search_emails("from:фамилия") → сверить адрес
+      • или уточните у пользователя
 3. exchange_suggest_meeting_times(...)    → 3–5 слотов
 4. Спросить пользователя / выбрать слот
 5. exchange_create_event(..., attendees=[...])
@@ -33,11 +37,13 @@ exchange_update_event(event_id, start=..., end=...)
 | `query` | Подстрока имени или email, **минимум 2 символа** |
 | `max_items` | 1–50, по умолчанию 20 |
 
-**Ответ:** `contacts[]` с полями `email`, `display_name`, `id`.
+**Ответ:** `contacts[]` с полями `email` (предпочтительный SMTP), `emails` (все адреса из GAL), `display_name`, `id`.
 
 **Ошибки:** `QUERY_TOO_SHORT`.
 
 Если несколько совпадений — **уточните у пользователя**, не угадывайте email.
+
+GAL иногда возвращает устаревший домен (`@instant-pay.ru` вместо `@fin-frame.ru`). Поле `email` уже предпочитает домен организатора; если сомневаетесь — проверьте через `exchange_search_emails` или спросите пользователя.
 
 ---
 
@@ -105,11 +111,11 @@ Per-attendee проблемы — в `errors[]`, запрос не падает 
 | `exchange_get_new_events` | Incremental sync для n8n/Telegram |
 | `exchange_respond_to_event` | Ответ на входящее приглашение |
 | `exchange_get_contacts` | Полный список без поиска — неудобен для имён |
-| Почтовые tools | Только fallback, если контакт не найден в GAL |
+| `exchange_search_emails` | Fallback: сверить SMTP по переписке, если GAL дал сомнительный адрес |
 
 ## Ограничения (важно)
 
-- **Только Exchange** внутри организации: Gmail/Yandex free/busy через EWS недоступен (`calendar_status: external`).
+- **Free/busy** запрашивается у Exchange для любого SMTP; `calendar_status: external` — только когда EWS явно отказал (Gmail/Yandex и т.п.).
 - Агент видит **занятость**, не темы чужих встреч (политика Exchange).
 - Повторяющиеся серии при `exchange_update_event` пока не поддерживаются (`RECURRENCE_UNSUPPORTED`).
 - Окно availability/suggest — **максимум 14 дней**.

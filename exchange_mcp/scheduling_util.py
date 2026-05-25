@@ -55,8 +55,45 @@ class SchedulingError(Exception):
         super().__init__(message)
 
 
+def normalize_smtp_address(value: str) -> str:
+    text = (value or "").strip()
+    if text.upper().startswith("SMTP:"):
+        text = text[5:].strip()
+    return text.lower()
+
+
 def normalize_email_address(value: str) -> str:
-    return (value or "").strip().lower()
+    return normalize_smtp_address(value)
+
+
+def collect_unique_emails(raw_addresses: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for raw_address in raw_addresses:
+        normalized = normalize_email_address(raw_address)
+        if not normalized or normalized in seen:
+            continue
+        if not is_valid_email_address(normalized):
+            continue
+        seen.add(normalized)
+        result.append(normalized)
+    return result
+
+
+def pick_preferred_email(emails: list[str], organizer_email: str) -> str:
+    if not emails:
+        return ""
+    organizer_normalized = normalize_email_address(organizer_email)
+    organizer_domain = (
+        organizer_normalized.split("@")[-1]
+        if "@" in organizer_normalized
+        else ""
+    )
+    if organizer_domain:
+        for email in emails:
+            if email.split("@")[-1] == organizer_domain:
+                return email
+    return emails[0]
 
 
 def is_valid_email_address(value: str) -> bool:

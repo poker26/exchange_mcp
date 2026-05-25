@@ -26,6 +26,8 @@ def exchange_search_contacts(query: str, max_items: int = 20) -> dict:
     """Search the global address list and contacts folder by name or email.
 
     Use this to resolve human names to SMTP addresses before scheduling.
+    Returns all known SMTP addresses in ``emails``; ``email`` is the
+    preferred one (organizer domain when available).
 
     Args:
         query: substring of display name or email (at least 2 characters).

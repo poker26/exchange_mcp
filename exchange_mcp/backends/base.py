@@ -148,11 +148,12 @@ class ContactItem:
     server_id: str
     display_name: str = ""
     email: str = ""
+    emails: list[str] = field(default_factory=list)
     phone: str = ""
     company: str = ""
 
     def to_dict(self) -> dict:
-        return {
+        payload = {
             "backend": self.backend,
             "id": self.server_id,
             "display_name": self.display_name,
@@ -160,6 +161,9 @@ class ContactItem:
             "phone": self.phone,
             "company": self.company,
         }
+        if self.emails:
+            payload["emails"] = list(self.emails)
+        return payload
 
 
 @dataclass
