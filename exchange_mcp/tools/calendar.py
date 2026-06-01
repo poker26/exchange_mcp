@@ -39,17 +39,21 @@ def exchange_get_calendar(
     else:
         start, end = _default_week_range()
 
-    items, backend = router.get_calendar(
+    items, backend, fields_profile, warnings = router.get_calendar(
         folder_id, start, end, limit=200,
     )
-    return {
+    response = {
         "backend": backend,
         "folder_id": folder_id,
         "date_from": start.isoformat(),
         "date_to": end.isoformat(),
         "count": len(items),
+        "fields_profile": fields_profile,
         "events": [event.to_dict() for event in items],
     }
+    if warnings:
+        response["warnings"] = warnings
+    return response
 
 
 def exchange_get_new_events(
@@ -62,20 +66,30 @@ def exchange_get_new_events(
     cursor plus UID + last-modified tracking (EWS).
     """
     max_items = max(1, min(int(max_items), 200))
-    added, changed, deleted, backend, is_initial = router.get_new_calendar(
-        folder_id, limit=max_items,
-    )
+    (
+        added,
+        changed,
+        deleted,
+        backend,
+        is_initial,
+        fields_profile,
+        warnings,
+    ) = router.get_new_calendar(folder_id, limit=max_items)
     upsert_events = added + changed
-    return {
+    response = {
         "backend": backend,
         "folder_id": folder_id,
         "is_initial": is_initial,
         "count": len(upsert_events),
+        "fields_profile": fields_profile,
         "added": [event.to_dict() for event in added],
         "changed": [event.to_dict() for event in changed],
         "deleted": deleted,
         "events": [event.to_dict() for event in upsert_events],
     }
+    if warnings:
+        response["warnings"] = warnings
+    return response
 
 
 def exchange_create_event(

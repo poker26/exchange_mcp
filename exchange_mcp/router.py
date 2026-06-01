@@ -195,20 +195,21 @@ class MailRouter:
         date_from: datetime,
         date_to: datetime,
         limit: int = 200,
-    ) -> tuple[list[CalendarItem], str]:
-        def _fetch(ews: EWSBackend) -> list[CalendarItem]:
+    ) -> tuple[list[CalendarItem], str, str, list[str]]:
+        def _fetch(ews: EWSBackend) -> tuple[list[CalendarItem], str, list[str]]:
             return ews.get_calendar_items(
                 folder_id, date_from, date_to, limit=limit,
             )
 
-        items, _backend = self._execute("get_calendar", _fetch)
-        return items, "ews"
+        fetch_result, _backend = self._execute("get_calendar", _fetch)
+        items, fields_profile, warnings = fetch_result
+        return items, "ews", fields_profile, warnings
 
     def get_new_calendar(
         self,
         folder_id: Optional[str],
         limit: int = 50,
-    ) -> tuple[list[CalendarItem], list[CalendarItem], list[dict], str, bool]:
+    ) -> tuple[list[CalendarItem], list[CalendarItem], list[dict], str, bool, str, list[str]]:
         def _resolve_folder(ews: EWSBackend) -> str:
             return folder_id or ews.calendar_folder_id()
 
@@ -221,7 +222,7 @@ class MailRouter:
         since = (cursor - _SAFETY_MARGIN) if cursor else None
 
         if is_initial:
-            def _seed(ews: EWSBackend) -> list[CalendarItem]:
+            def _seed(ews: EWSBackend) -> tuple[list[CalendarItem], str, list[str]]:
                 now = datetime.now(timezone.utc)
                 return ews.get_calendar_items(
                     folder_id,
@@ -230,7 +231,8 @@ class MailRouter:
                     limit=500,
                 )
 
-            seed_items, _backend = self._execute("seed_calendar", _seed)
+            seed_result, _backend = self._execute("seed_calendar", _seed)
+            seed_items, _fields_profile, _warnings = seed_result
             max_marker: Optional[datetime] = None
             for event in seed_items:
                 if not event.uid:
@@ -243,11 +245,11 @@ class MailRouter:
                     max_marker = marker
             if max_marker is not None:
                 self.state.set_cursor(state_key, max_marker)
-            return [], [], [], "ews", True
+            return [], [], [], "ews", True, _fields_profile, _warnings
 
         known_events = self.state.get_calendar_events(state_key)
         if not known_events and cursor is not None:
-            def _migrate_seed(ews: EWSBackend) -> list[CalendarItem]:
+            def _migrate_seed(ews: EWSBackend) -> tuple[list[CalendarItem], str, list[str]]:
                 now = datetime.now(timezone.utc)
                 return ews.get_calendar_items(
                     folder_id,
@@ -256,9 +258,10 @@ class MailRouter:
                     limit=500,
                 )
 
-            seed_items, _backend = self._execute(
+            seed_result, _backend = self._execute(
                 "migrate_calendar_state", _migrate_seed,
             )
+            seed_items, _fields_profile, _warnings = seed_result
             for event in seed_items:
                 if event.uid:
                     self.state.set_calendar_event(
@@ -266,10 +269,11 @@ class MailRouter:
                     )
             known_events = self.state.get_calendar_events(state_key)
 
-        def _fetch(ews: EWSBackend) -> list[CalendarItem]:
+        def _fetch(ews: EWSBackend) -> tuple[list[CalendarItem], str, list[str]]:
             return ews.get_calendar_items_since(folder_id, since, limit=limit)
 
-        items, _backend = self._execute("get_new_calendar", _fetch)
+        fetch_result, _backend = self._execute("get_new_calendar", _fetch)
+        items, fields_profile, calendar_warnings = fetch_result
 
         known_events = self.state.get_calendar_events(state_key)
         added_items: list[CalendarItem] = []
@@ -332,7 +336,15 @@ class MailRouter:
         if max_marker is not None:
             self.state.set_cursor(state_key, max_marker)
 
-        return added_items, changed_items, deleted_items, "ews", False
+        return (
+            added_items,
+            changed_items,
+            deleted_items,
+            "ews",
+            False,
+            fields_profile,
+            calendar_warnings,
+        )
 
     def create_calendar_event(
         self,

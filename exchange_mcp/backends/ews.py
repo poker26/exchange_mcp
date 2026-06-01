@@ -16,6 +16,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
+from ..calendar_fields import fetch_calendar_view_events
 from ..calendar_meeting import (
     RECURRENCE_SCOPE_SINGLE,
     assert_can_forward_calendar_item,
@@ -888,50 +889,42 @@ class EWSBackend:
 
         return self._run_serialized("respond_to_event", _respond)
 
+    def _resolve_calendar_folder(self, account, folder_id: Optional[str]):
+        if folder_id:
+            try:
+                return account.root.get_folder(_folder_id_type()(id=folder_id))
+            except Exception as exc:
+                raise BackendError(f"folder lookup failed: {exc}") from exc
+        return account.calendar
+
+    def _fetch_calendar_items_impl(
+        self,
+        folder_id: Optional[str],
+        date_from: datetime,
+        date_to: datetime,
+        limit: int = 200,
+    ) -> tuple[list[CalendarItem], str, list[str]]:
+        account = self._account_or_raise()
+        folder = self._resolve_calendar_folder(account, folder_id)
+        return fetch_calendar_view_events(
+            folder,
+            start_ews=_to_ews_datetime(date_from),
+            end_ews=_to_ews_datetime(date_to),
+            limit=limit,
+            to_calendar_item=self._to_calendar_item,
+        )
+
     def get_calendar_items(
         self,
         folder_id: Optional[str],
         date_from: datetime,
         date_to: datetime,
         limit: int = 200,
-    ) -> list[CalendarItem]:
-        def _fetch() -> list[CalendarItem]:
-            account = self._account_or_raise()
-            if folder_id:
-                try:
-                    folder = account.root.get_folder(_folder_id_type()(id=folder_id))
-                except Exception as exc:
-                    raise BackendError(f"folder lookup failed: {exc}") from exc
-            else:
-                folder = account.calendar
-
-            field_names = [
-                "id",
-                "uid",
-                "subject",
-                "location",
-                "organizer",
-                "start",
-                "end",
-                "last_modified_time",
-                "is_all_day",
-                "body",
-                "required_attendees",
-                "optional_attendees",
-                "is_cancelled",
-                "type",
-                "recurring_master_id",
-            ]
-            query_set = (
-                folder.view(
-                    start=_to_ews_datetime(date_from),
-                    end=_to_ews_datetime(date_to),
-                )
-                .only(*field_names)
+    ) -> tuple[list[CalendarItem], str, list[str]]:
+        def _fetch() -> tuple[list[CalendarItem], str, list[str]]:
+            return self._fetch_calendar_items_impl(
+                folder_id, date_from, date_to, limit=limit,
             )
-            query_set = query_set[: max(1, min(limit, 500))]
-
-            return [self._to_calendar_item(event) for event in query_set]
 
         return self._run_serialized("get_calendar_items", _fetch)
 
@@ -940,29 +933,35 @@ class EWSBackend:
         folder_id: Optional[str],
         since: Optional[datetime],
         limit: int = 50,
-    ) -> list[CalendarItem]:
-        now = datetime.now(timezone.utc)
-        if since is None:
-            date_from = now - timedelta(days=14)
-        else:
-            date_from = since - timedelta(minutes=5)
-        date_to = now + timedelta(days=365)
-        items = self.get_calendar_items(
-            folder_id, date_from, date_to, limit=max(limit * 3, 100),
-        )
-        if since is None:
-            return items[:limit]
+    ) -> tuple[list[CalendarItem], str, list[str]]:
+        def _fetch() -> tuple[list[CalendarItem], str, list[str]]:
+            now = datetime.now(timezone.utc)
+            if since is None:
+                date_from = now - timedelta(days=14)
+            else:
+                date_from = since - timedelta(minutes=5)
+            date_to = now + timedelta(days=365)
+            items, fields_profile, warnings = self._fetch_calendar_items_impl(
+                folder_id,
+                date_from,
+                date_to,
+                limit=max(limit * 3, 100),
+            )
+            if since is None:
+                return items[:limit], fields_profile, warnings
 
-        filtered: list[CalendarItem] = []
-        for event in items:
-            event_time = event.last_modified or event.start
-            if event_time and event_time > since:
-                filtered.append(event)
-        filtered.sort(
-            key=lambda event: event.last_modified or event.start or now,
-            reverse=True,
-        )
-        return filtered[:limit]
+            filtered: list[CalendarItem] = []
+            for event in items:
+                event_time = event.last_modified or event.start
+                if event_time and event_time > since:
+                    filtered.append(event)
+            filtered.sort(
+                key=lambda event: event.last_modified or event.start or now,
+                reverse=True,
+            )
+            return filtered[:limit], fields_profile, warnings
+
+        return self._run_serialized("get_calendar_items_since", _fetch)
 
     def list_calendar_uids_in_range(
         self,
