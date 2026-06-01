@@ -54,6 +54,7 @@ Working (EWS):
 - Calendar: get/new/create/update, respond (accept/decline/tentative)
 - Calendar delete: single occurrence or entire series (`delete_series`)
 - Scheduling: search contacts, get availability, suggest meeting times (see `AGENTS.md`)
+- Meeting invites: forward event, update attendees, get event detail (RFC 0003)
 - Contacts, folders, list/download attachments (10 MB cap)
 
 Calendar update: see `docs/rfc/0001-calendar-update-reschedule.md`.

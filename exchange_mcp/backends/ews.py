@@ -16,6 +16,17 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
+from ..calendar_meeting import (
+    RECURRENCE_SCOPE_SINGLE,
+    assert_can_forward_calendar_item,
+    assert_can_manage_attendees,
+    map_attendee_record,
+    merge_attendee_lists,
+    normalize_recurrence_scope,
+    organizer_smtp_address,
+    resolve_calendar_item_for_scope,
+    validate_recipient_list,
+)
 from ..calendar_recurrence import (
     classify_calendar_recurrence_role,
     extract_recurring_master_id,
@@ -37,9 +48,11 @@ from .base import (
     AttendeeAvailability,
     BackendError,
     BusyInterval,
+    CalendarEventDetail,
     CalendarItem,
     CalendarUpdateError,
     ContactItem,
+    EventAttendee,
     FolderInfo,
     MailBackend,
     MailItem,
@@ -640,6 +653,222 @@ class EWSBackend:
 
         return self._run_serialized("get_calendar_event_by_id", _fetch)
 
+    def get_calendar_event_detail(
+        self,
+        event_id: str,
+        *,
+        include_body: bool = True,
+    ) -> CalendarEventDetail:
+        def _fetch() -> CalendarEventDetail:
+            account = self._account_or_raise()
+            item = resolve_calendar_item_for_scope(
+                account,
+                event_id,
+                RECURRENCE_SCOPE_SINGLE,
+                fetch_item_by_id=_fetch_item_by_id,
+            )
+            item.refresh()
+            return self._to_calendar_event_detail(item, include_body=include_body)
+
+        return self._run_serialized("get_calendar_event_detail", _fetch)
+
+    def forward_calendar_event(
+        self,
+        event_id: str,
+        to: list[str],
+        body: str = "",
+        body_is_html: bool = False,
+        *,
+        dry_run: bool = False,
+        recurrence_scope: str = "single_occurrence",
+    ) -> dict:
+        def _forward() -> dict:
+            from exchangelib import HTMLBody, Mailbox  # type: ignore[import-not-found]
+
+            account = self._account_or_raise()
+            recipients = validate_recipient_list(to)
+            item = resolve_calendar_item_for_scope(
+                account,
+                event_id,
+                recurrence_scope,
+                fetch_item_by_id=_fetch_item_by_id,
+            )
+            assert_can_forward_calendar_item(item)
+
+            if dry_run:
+                detail = self._to_calendar_event_detail(item, include_body=False)
+                return {
+                    "dry_run": True,
+                    "status": "preview",
+                    "action": "forward_event",
+                    "event_id": str(item.id),
+                    "subject": detail.subject,
+                    "to": recipients,
+                    "recurrence_scope": normalize_recurrence_scope(recurrence_scope),
+                    "event": detail.to_dict(),
+                }
+
+            message_body = HTMLBody(body) if body_is_html and body else body
+            try:
+                item.forward(
+                    subject=f"FW: {getattr(item, 'subject', '') or ''}",
+                    body=message_body,
+                    to_recipients=[
+                        Mailbox(email_address=address) for address in recipients
+                    ],
+                )
+            except CalendarUpdateError:
+                raise
+            except Exception as exc:
+                error_text = str(exc).lower()
+                if "permission" in error_text or "access" in error_text:
+                    raise CalendarUpdateError(
+                        "INSUFFICIENT_PERMISSIONS",
+                        f"cannot forward event: {exc}",
+                    ) from exc
+                raise CalendarUpdateError(
+                    "EWS_FAULT",
+                    f"failed to forward calendar event: {exc}",
+                ) from exc
+
+            return {
+                "dry_run": False,
+                "status": "forwarded",
+                "event_id": str(item.id),
+                "subject": getattr(item, "subject", "") or "",
+                "to": recipients,
+            }
+
+        return self._run_serialized("forward_calendar_event", _forward)
+
+    def update_event_attendees(
+        self,
+        event_id: str,
+        *,
+        add_required: Optional[list[str]] = None,
+        add_optional: Optional[list[str]] = None,
+        remove: Optional[list[str]] = None,
+        send_meeting_invitations: str = "to_changed",
+        comment: str = "",
+        dry_run: bool = False,
+        recurrence_scope: str = "single_occurrence",
+    ) -> dict:
+        def _update() -> dict:
+            from exchangelib import Attendee, Mailbox  # type: ignore[import-not-found]
+
+            account = self._account_or_raise()
+            _ = comment
+            add_required_list = list(add_required or [])
+            add_optional_list = list(add_optional or [])
+            remove_list = list(remove or [])
+
+            if not add_required_list and not add_optional_list and not remove_list:
+                raise CalendarUpdateError(
+                    "NO_ATTENDEE_CHANGES",
+                    "provide add_required, add_optional, or remove",
+                )
+
+            item = resolve_calendar_item_for_scope(
+                account,
+                event_id,
+                recurrence_scope,
+                fetch_item_by_id=_fetch_item_by_id,
+            )
+            assert_can_manage_attendees(item)
+
+            def create_attendee(email: str):
+                return Attendee(mailbox=Mailbox(email_address=email))
+
+            required_before = list(getattr(item, "required_attendees", None) or [])
+            optional_before = list(getattr(item, "optional_attendees", None) or [])
+
+            required_merged, added_required, removed_required = merge_attendee_lists(
+                required_before,
+                add_required_list,
+                remove_list,
+                create_attendee=create_attendee,
+            )
+            optional_merged, added_optional, removed_optional = merge_attendee_lists(
+                optional_before,
+                add_optional_list,
+                remove_list,
+                create_attendee=create_attendee,
+            )
+
+            changed_fields: list[str] = []
+            if required_merged != required_before:
+                changed_fields.append("required_attendees")
+            if optional_merged != optional_before:
+                changed_fields.append("optional_attendees")
+
+            if not changed_fields:
+                raise CalendarUpdateError(
+                    "NO_ATTENDEE_CHANGES",
+                    "no attendee changes after deduplication",
+                )
+
+            detail = self._to_calendar_event_detail(item, include_body=False)
+            preview_payload = {
+                "dry_run": True,
+                "status": "preview",
+                "action": "update_event_attendees",
+                "event_id": str(item.id),
+                "add_required": added_required,
+                "add_optional": added_optional,
+                "remove": list(
+                    set(removed_required + removed_optional + [
+                        normalize_email_address(email)
+                        for email in remove_list
+                    ]),
+                ),
+                "send_meeting_invitations": send_meeting_invitations,
+                "recurrence_scope": normalize_recurrence_scope(recurrence_scope),
+                "event": detail.to_dict(),
+            }
+
+            if dry_run:
+                return preview_payload
+
+            item.required_attendees = required_merged
+            item.optional_attendees = optional_merged
+            invitation_mode = self._resolve_send_meeting_invitations(
+                send_meeting_invitations,
+            )
+            try:
+                item.save(
+                    update_fields=changed_fields,
+                    send_meeting_invitations=invitation_mode,
+                )
+                item.refresh()
+            except CalendarUpdateError:
+                raise
+            except Exception as exc:
+                error_text = str(exc).lower()
+                if "permission" in error_text or "access" in error_text:
+                    raise CalendarUpdateError(
+                        "INSUFFICIENT_PERMISSIONS",
+                        f"cannot update attendees: {exc}",
+                    ) from exc
+                raise CalendarUpdateError(
+                    "EWS_FAULT",
+                    f"failed to update attendees: {exc}",
+                ) from exc
+
+            updated = self._to_calendar_event_detail(item, include_body=True)
+            result = {
+                "dry_run": False,
+                "status": "updated",
+                "event_id": str(item.id),
+                "send_meeting_invitations": send_meeting_invitations,
+                "added_required": added_required,
+                "added_optional": added_optional,
+                "removed": preview_payload["remove"],
+                "event": updated.to_dict(),
+            }
+            return result
+
+        return self._run_serialized("update_event_attendees", _update)
+
     def respond_to_event(self, event_id: str, response: str) -> CalendarItem:
         def _respond() -> CalendarItem:
             account = self._account_or_raise()
@@ -1229,6 +1458,54 @@ class EWSBackend:
             has_attachments=bool(getattr(message, "has_attachments", False)),
             body=body_text,
             body_is_html=body_is_html,
+        )
+
+    @classmethod
+    def _to_calendar_event_detail(cls, event, *, include_body: bool) -> CalendarEventDetail:
+        start_value = getattr(event, "start", None)
+        end_value = getattr(event, "end", None)
+        if start_value is not None:
+            start_value = _to_plain_utc_datetime(start_value)
+        if end_value is not None:
+            end_value = _to_plain_utc_datetime(end_value)
+
+        body_text = ""
+        if include_body and getattr(event, "body", None):
+            body_text = str(event.body)
+
+        def map_field(field_name: str) -> list[EventAttendee]:
+            result: list[EventAttendee] = []
+            for attendee in getattr(event, field_name, None) or []:
+                record = map_attendee_record(attendee)
+                if record["email"]:
+                    result.append(EventAttendee(
+                        name=record["name"],
+                        email=record["email"],
+                        response=record["response"],
+                    ))
+            return result
+
+        recurrence_role = classify_calendar_recurrence_role(event)
+        recurring_master_id = extract_recurring_master_id(event)
+
+        return CalendarEventDetail(
+            backend="ews",
+            server_id=str(event.id),
+            uid=getattr(event, "uid", "") or "",
+            subject=getattr(event, "subject", "") or "",
+            organizer=organizer_smtp_address(event),
+            start=start_value,
+            end=end_value,
+            location=getattr(event, "location", "") or "",
+            body=body_text,
+            required_attendees=map_field("required_attendees"),
+            optional_attendees=map_field("optional_attendees"),
+            resources=map_field("resources"),
+            is_meeting=bool(getattr(event, "is_meeting", False)),
+            is_recurring=bool(getattr(event, "is_recurring", False)),
+            is_cancelled=bool(getattr(event, "is_cancelled", False)),
+            recurrence_role=recurrence_role,
+            recurring_master_id=recurring_master_id,
         )
 
     @staticmethod

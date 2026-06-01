@@ -106,6 +106,52 @@ Per-attendee проблемы — в `errors[]`, запрос не падает 
 
 Без шага 1–2 сервер вернёт `CONFIRMATION_EXPIRED_OR_UNKNOWN` или `USER_CONFIRMATION_REQUIRED`.
 
+## Календарные приглашения (RFC 0003)
+
+### Переслать встречу коллеге (полноценный invite)
+
+**Не используйте** `exchange_forward_email` для событий календаря — будет ошибка `not an email message`.
+
+```
+1. exchange_get_calendar(...) или exchange_get_event(event_id)  → найти встречу
+2. exchange_search_contacts("моисеев")  → email
+3. exchange_forward_event(event_id, to=[email], dry_run=true)   → показать preview
+4. После согласия: exchange_forward_event(..., dry_run=false)
+```
+
+### Добавить участника во встречу
+
+```
+1. exchange_get_event(event_id)  → текущие required_attendees / optional_attendees
+2. exchange_update_event_attendees(
+     event_id,
+     add_required=["new@fin-frame.ru"],
+     send_meeting_invitations="to_changed",
+     dry_run=true
+   )
+3. После согласия: то же с dry_run=false
+```
+
+По умолчанию `send_meeting_invitations=to_changed` — уведомление только новым/изменённым, без спама всех.
+
+### `exchange_get_event`
+
+Детали **одного** события: участники с ролями, `response` (accepted/decline/…), `is_meeting`, `location`, `body`.
+
+### `exchange_forward_event` / `exchange_update_event_attendees`
+
+| Параметр | Описание |
+| --- | --- |
+| `dry_run` | `true` — preview, без отправки в Exchange |
+| `recurrence_scope` | `single_occurrence` (default) или `series` |
+
+| Код ошибки | Значение |
+| --- | --- |
+| `NOT_ORGANIZER` | Менять участников может только организатор |
+| `CAN_FORWARD_ONLY` | Объект нельзя переслать как meeting |
+| `INSUFFICIENT_PERMISSIONS` | EWS отказал по правам |
+| `NO_ATTENDEE_CHANGES` | Пустой запрос на изменение участников |
+
 ## Что НЕ использовать для планирования
 
 | Инструмент | Почему |
@@ -114,6 +160,7 @@ Per-attendee проблемы — в `errors[]`, запрос не падает 
 | `exchange_respond_to_event` | Ответ на входящее приглашение |
 | `exchange_get_contacts` | Полный список без поиска — неудобен для имён |
 | `exchange_search_emails` | Fallback: сверить SMTP по переписке, если GAL дал сомнительный адрес |
+| `exchange_forward_email` | Только письма; для встреч — `exchange_forward_event` |
 
 ## Ограничения (важно)
 
@@ -179,4 +226,4 @@ Per-attendee проблемы — в `errors[]`, запрос не падает 
 
 После `git pull` на сервере: `docker compose up -d --build`, затем **Reload MCP** в Cursor.
 
-Подробности: `INSTRUCTIONS.md`, RFC: `docs/rfc/0002-meeting-scheduling-availability.md`.
+Подробности: `INSTRUCTIONS.md`, RFC: `docs/rfc/0002-meeting-scheduling-availability.md`, `docs/rfc/0003-calendar-invitations-forward-attendees.md`.

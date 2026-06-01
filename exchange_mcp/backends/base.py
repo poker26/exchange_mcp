@@ -57,6 +57,69 @@ class MailItem:
 
 
 @dataclass
+class EventAttendee:
+    name: str
+    email: str
+    response: str = "unknown"
+
+    def to_dict(self) -> dict:
+        return {
+            "name": self.name,
+            "email": self.email,
+            "response": self.response,
+        }
+
+
+@dataclass
+class CalendarEventDetail:
+    backend: str
+    server_id: str
+    uid: str
+    subject: str = ""
+    organizer: str = ""
+    start: Optional[datetime] = None
+    end: Optional[datetime] = None
+    location: str = ""
+    body: str = ""
+    required_attendees: list[EventAttendee] = field(default_factory=list)
+    optional_attendees: list[EventAttendee] = field(default_factory=list)
+    resources: list[EventAttendee] = field(default_factory=list)
+    is_meeting: bool = False
+    is_recurring: bool = False
+    is_cancelled: bool = False
+    recurrence_role: str = "single"
+    recurring_master_id: str = ""
+
+    def to_dict(self) -> dict:
+        payload = {
+            "backend": self.backend,
+            "id": self.server_id,
+            "uid": self.uid,
+            "subject": self.subject,
+            "organizer": self.organizer,
+            "start": self.start.isoformat() if self.start else "",
+            "end": self.end.isoformat() if self.end else "",
+            "location": self.location,
+            "required_attendees": [
+                attendee.to_dict() for attendee in self.required_attendees
+            ],
+            "optional_attendees": [
+                attendee.to_dict() for attendee in self.optional_attendees
+            ],
+            "resources": [resource.to_dict() for resource in self.resources],
+            "is_meeting": self.is_meeting,
+            "is_recurring": self.is_recurring,
+            "is_cancelled": self.is_cancelled,
+            "body": self.body,
+        }
+        if self.recurrence_role != "single":
+            payload["recurrence_role"] = self.recurrence_role
+        if self.recurring_master_id:
+            payload["recurring_master_id"] = self.recurring_master_id
+        return payload
+
+
+@dataclass
 class CalendarItem:
     backend: str
     server_id: str

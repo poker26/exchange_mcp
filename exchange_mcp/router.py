@@ -23,6 +23,7 @@ from .backends.base import (
     AttachmentInfo,
     AttendeeAvailability,
     BackendError,
+    CalendarEventDetail,
     CalendarItem,
     CalendarUpdateError,
     ContactItem,
@@ -435,6 +436,70 @@ class MailRouter:
 
         items, _backend = self._execute("list_attachments", _list)
         return items, "ews"
+
+    def get_calendar_event(
+        self,
+        event_id: str,
+        *,
+        include_body: bool = True,
+    ) -> tuple[CalendarEventDetail, str]:
+        def _fetch(ews: EWSBackend) -> CalendarEventDetail:
+            return ews.get_calendar_event_detail(
+                event_id, include_body=include_body,
+            )
+
+        item, _backend = self._execute("get_calendar_event", _fetch)
+        return item, "ews"
+
+    def forward_calendar_event(
+        self,
+        event_id: str,
+        to: list[str],
+        body: str = "",
+        body_is_html: bool = False,
+        *,
+        dry_run: bool = False,
+        recurrence_scope: str = "single_occurrence",
+    ) -> tuple[dict, str]:
+        def _forward(ews: EWSBackend) -> dict:
+            return ews.forward_calendar_event(
+                event_id,
+                to,
+                body=body,
+                body_is_html=body_is_html,
+                dry_run=dry_run,
+                recurrence_scope=recurrence_scope,
+            )
+
+        result, _backend = self._execute("forward_calendar_event", _forward)
+        return result, "ews"
+
+    def update_event_attendees(
+        self,
+        event_id: str,
+        *,
+        add_required: Optional[list[str]] = None,
+        add_optional: Optional[list[str]] = None,
+        remove: Optional[list[str]] = None,
+        send_meeting_invitations: str = "to_changed",
+        comment: str = "",
+        dry_run: bool = False,
+        recurrence_scope: str = "single_occurrence",
+    ) -> tuple[dict, str]:
+        def _update(ews: EWSBackend) -> dict:
+            return ews.update_event_attendees(
+                event_id,
+                add_required=add_required,
+                add_optional=add_optional,
+                remove=remove,
+                send_meeting_invitations=send_meeting_invitations,
+                comment=comment,
+                dry_run=dry_run,
+                recurrence_scope=recurrence_scope,
+            )
+
+        result, _backend = self._execute("update_event_attendees", _update)
+        return result, "ews"
 
     def respond_to_event(self, event_id: str, response: str) -> tuple[CalendarItem, str]:
         def _respond(ews: EWSBackend) -> CalendarItem:

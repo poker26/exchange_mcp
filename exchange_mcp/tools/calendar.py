@@ -328,6 +328,103 @@ def exchange_delete_event(
     }
 
 
+def exchange_get_event(
+    event_id: str,
+    include_body: bool = True,
+) -> dict:
+    """Fetch one calendar event with full attendee lists and meeting metadata.
+
+    Args:
+        event_id: calendar item id from `exchange_get_calendar`.
+        include_body: include event body text (default True).
+    """
+    try:
+        event, backend = router.get_calendar_event(
+            event_id, include_body=include_body,
+        )
+    except CalendarUpdateError as exc:
+        return {"error": True, "code": exc.code, "message": str(exc)}
+    return {
+        "backend": backend,
+        "event": event.to_dict(),
+    }
+
+
+def exchange_forward_event(
+    event_id: str,
+    to: list[str],
+    body: str = "",
+    body_is_html: bool = False,
+    dry_run: bool = False,
+    recurrence_scope: str = "single_occurrence",
+) -> dict:
+    """Forward a calendar meeting invitation to new recipients.
+
+    Use this instead of `exchange_forward_email` for calendar items.
+    Recipients receive a proper meeting request (Accept / Tentative / Decline).
+
+    Args:
+        event_id: calendar item id from `exchange_get_calendar`.
+        to: recipient SMTP addresses.
+        body: optional note added to the forwarded invitation.
+        body_is_html: treat body as HTML when non-empty.
+        dry_run: preview only, do not send.
+        recurrence_scope: `single_occurrence` (default) or `series`.
+    """
+    try:
+        result, backend = router.forward_calendar_event(
+            event_id,
+            to,
+            body=body,
+            body_is_html=body_is_html,
+            dry_run=dry_run,
+            recurrence_scope=recurrence_scope,
+        )
+    except CalendarUpdateError as exc:
+        return {"error": True, "code": exc.code, "message": str(exc)}
+    return {"backend": backend, **result}
+
+
+def exchange_update_event_attendees(
+    event_id: str,
+    add_required: Optional[list[str]] = None,
+    add_optional: Optional[list[str]] = None,
+    remove: Optional[list[str]] = None,
+    send_meeting_invitations: str = "to_changed",
+    comment: str = "",
+    dry_run: bool = False,
+    recurrence_scope: str = "single_occurrence",
+) -> dict:
+    """Add or remove attendees on an existing meeting and send meeting updates.
+
+    Only the organizer can change attendees. Default: notify changed attendees only.
+
+    Args:
+        event_id: calendar item id.
+        add_required: emails to add as required attendees.
+        add_optional: emails to add as optional attendees.
+        remove: emails to remove from required or optional lists.
+        send_meeting_invitations: `to_changed` (default), `to_all`, or `save_only`.
+        comment: reserved for future use.
+        dry_run: preview changes without saving.
+        recurrence_scope: `single_occurrence` or `series`.
+    """
+    try:
+        result, backend = router.update_event_attendees(
+            event_id,
+            add_required=add_required,
+            add_optional=add_optional,
+            remove=remove,
+            send_meeting_invitations=send_meeting_invitations,
+            comment=comment,
+            dry_run=dry_run,
+            recurrence_scope=recurrence_scope,
+        )
+    except CalendarUpdateError as exc:
+        return {"error": True, "code": exc.code, "message": str(exc)}
+    return {"backend": backend, **result}
+
+
 def exchange_respond_to_event(event_id: str, response: str) -> dict:
     """Accept, decline, or tentatively accept a meeting invitation.
 
@@ -347,8 +444,11 @@ def exchange_respond_to_event(event_id: str, response: str) -> dict:
 TOOLS = [
     exchange_get_calendar,
     exchange_get_new_events,
+    exchange_get_event,
     exchange_create_event,
     exchange_update_event,
+    exchange_forward_event,
+    exchange_update_event_attendees,
     exchange_prepare_delete_event,
     exchange_delete_event,
     exchange_get_availability,
