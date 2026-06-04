@@ -120,6 +120,13 @@ class CalendarEventDetail:
 
 
 @dataclass
+class CreateCalendarEventResult:
+    detail: CalendarEventDetail
+    invitations_sent: bool
+    send_meeting_invitations: str
+
+
+@dataclass
 class CalendarItem:
     backend: str
     server_id: str
@@ -136,6 +143,7 @@ class CalendarItem:
     is_cancelled: bool = False
     recurrence_role: str = "single"
     recurring_master_id: str = ""
+    attendees_loaded: bool = True
 
     def to_dict(self) -> dict:
         payload = {
@@ -155,6 +163,8 @@ class CalendarItem:
             "attendees": self.attendees,
             "is_cancelled": self.is_cancelled,
         }
+        if not self.attendees_loaded:
+            payload["attendees_loaded"] = False
         if self.recurrence_role != "single":
             payload["recurrence_role"] = self.recurrence_role
         if self.recurring_master_id:

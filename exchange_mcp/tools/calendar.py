@@ -99,20 +99,44 @@ def exchange_create_event(
     location: str = "",
     body: str = "",
     attendees: Optional[list[str]] = None,
+    send_meeting_invitations: str = "to_all",
 ) -> dict:
-    """Create a calendar event via EWS."""
-    event, backend = router.create_calendar_event(
-        subject=subject,
-        start=start,
-        end=end,
-        location=location,
-        body=body,
-        attendees=attendees,
-    )
+    """Create a calendar event via EWS.
+
+    When `attendees` is non-empty, creates a meeting and sends invitations by default
+    (`send_meeting_invitations=to_all`). Use `save_only` to keep a personal appointment
+    without mailing invites. After create, verify with `exchange_get_event`: expect
+    `is_meeting: true` when invitations were sent.
+    """
+    try:
+        result, backend = router.create_calendar_event(
+            subject=subject,
+            start=start,
+            end=end,
+            location=location,
+            body=body,
+            attendees=attendees,
+            send_meeting_invitations=send_meeting_invitations,
+        )
+    except CalendarUpdateError as exc:
+        return {"error": True, "code": exc.code, "message": str(exc)}
+
+    event_payload = result.detail.to_dict()
+    event_payload["invitations_sent"] = result.invitations_sent
+    event_payload["send_meeting_invitations"] = result.send_meeting_invitations
+    flat_attendees = [
+        attendee["email"]
+        for attendee in event_payload.get("required_attendees", [])
+        if attendee.get("email")
+    ]
+    event_payload["attendees"] = flat_attendees
+
     return {
         "backend": backend,
         "status": "created",
-        "event": event.to_dict(),
+        "invitations_sent": result.invitations_sent,
+        "send_meeting_invitations": result.send_meeting_invitations,
+        "event": event_payload,
     }
 
 

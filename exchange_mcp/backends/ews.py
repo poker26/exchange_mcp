@@ -20,6 +20,7 @@ from ..calendar_fields import fetch_calendar_view_events
 from ..calendar_meeting import (
     RECURRENCE_SCOPE_SINGLE,
     assert_can_forward_calendar_item,
+    normalize_smtp_address,
     assert_can_manage_attendees,
     map_attendee_record,
     merge_attendee_lists,
@@ -52,6 +53,7 @@ from .base import (
     CalendarEventDetail,
     CalendarItem,
     CalendarUpdateError,
+    CreateCalendarEventResult,
     ContactItem,
     EventAttendee,
     FolderInfo,
@@ -911,7 +913,9 @@ class EWSBackend:
             start_ews=_to_ews_datetime(date_from),
             end_ews=_to_ews_datetime(date_to),
             limit=limit,
-            to_calendar_item=self._to_calendar_item,
+            to_calendar_item=lambda event, attendees_loaded: self._to_calendar_item(
+                event, attendees_loaded=attendees_loaded,
+            ),
         )
 
     def get_calendar_items(
@@ -997,6 +1001,25 @@ class EWSBackend:
 
         return self._run_serialized("list_calendar_uids_in_range", _fetch)
 
+    @staticmethod
+    def _resolve_create_send_meeting_invitations(
+        attendee_emails: list[str],
+        send_meeting_invitations: str,
+    ) -> tuple[str, str, bool]:
+        alias = (send_meeting_invitations or "").strip().lower()
+        if not attendee_emails:
+            return (
+                EWSBackend._resolve_send_meeting_invitations("save_only"),
+                "save_only",
+                False,
+            )
+        resolved_alias = alias or "to_all"
+        return (
+            EWSBackend._resolve_send_meeting_invitations(resolved_alias),
+            resolved_alias,
+            resolved_alias != "save_only",
+        )
+
     def create_calendar_event(
         self,
         subject: str,
@@ -1006,12 +1029,13 @@ class EWSBackend:
         body: str = "",
         attendees: Optional[list[str]] = None,
         folder_id: Optional[str] = None,
-    ) -> CalendarItem:
-        def _create() -> CalendarItem:
-            account = self._account_or_raise()
+        send_meeting_invitations: str = "to_all",
+    ) -> CreateCalendarEventResult:
+        def _create() -> CreateCalendarEventResult:
             from exchangelib import Attendee, CalendarItem as EwsCalendarItem  # type: ignore[import-not-found]
             from exchangelib import Mailbox  # type: ignore[import-not-found]
 
+            account = self._account_or_raise()
             if folder_id:
                 folder = account.root.get_folder(_folder_id_type()(id=folder_id))
             else:
@@ -1019,10 +1043,26 @@ class EWSBackend:
 
             start_time = _to_ews_datetime(parse_iso_datetime(start))
             end_time = _to_ews_datetime(parse_iso_datetime(end))
+
+            attendee_emails: list[str] = []
+            seen_emails: set[str] = set()
+            for raw_address in attendees or []:
+                normalized = normalize_smtp_address(raw_address)
+                if not normalized or normalized in seen_emails:
+                    continue
+                seen_emails.add(normalized)
+                attendee_emails.append(normalized)
+
+            invitation_mode, invitation_alias, expect_invitations = (
+                self._resolve_create_send_meeting_invitations(
+                    attendee_emails,
+                    send_meeting_invitations,
+                )
+            )
+
             attendee_list = [
                 Attendee(mailbox=Mailbox(email_address=address))
-                for address in (attendees or [])
-                if address.strip()
+                for address in attendee_emails
             ]
             event = EwsCalendarItem(
                 account=account,
@@ -1033,9 +1073,35 @@ class EWSBackend:
                 location=location,
                 body=body,
                 required_attendees=attendee_list,
+                is_response_requested=bool(attendee_emails),
             )
-            event.save()
-            return self._to_calendar_item(event)
+            try:
+                event.save(send_meeting_invitations=invitation_mode)
+                event.refresh()
+            except CalendarUpdateError:
+                raise
+            except Exception as exc:
+                raise CalendarUpdateError(
+                    "EWS_FAULT",
+                    f"failed to create calendar event: {exc}",
+                ) from exc
+
+            detail = self._to_calendar_event_detail(event, include_body=True)
+            is_meeting = bool(detail.is_meeting)
+            invitations_sent = expect_invitations and is_meeting
+
+            if expect_invitations and not invitations_sent:
+                raise CalendarUpdateError(
+                    "INVITATIONS_NOT_SENT",
+                    "event was saved but Exchange did not create a meeting request; "
+                    "verify attendee addresses and organizer permissions",
+                )
+
+            return CreateCalendarEventResult(
+                detail=detail,
+                invitations_sent=invitations_sent,
+                send_meeting_invitations=invitation_alias,
+            )
 
         return self._run_serialized("create_calendar_event", _create)
 
@@ -1508,7 +1574,7 @@ class EWSBackend:
         )
 
     @staticmethod
-    def _to_calendar_item(event) -> CalendarItem:
+    def _to_calendar_item(event, *, attendees_loaded: bool = True) -> CalendarItem:
         start_value = getattr(event, "start", None)
         end_value = getattr(event, "end", None)
         if start_value is not None:
@@ -1560,6 +1626,7 @@ class EWSBackend:
             is_cancelled=bool(getattr(event, "is_cancelled", False)),
             recurrence_role=recurrence_role,
             recurring_master_id=recurring_master_id,
+            attendees_loaded=attendees_loaded,
         )
 
     @staticmethod

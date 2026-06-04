@@ -78,7 +78,7 @@ def fetch_calendar_view_events(
     start_ews,
     end_ews,
     limit: int,
-    to_calendar_item: Callable[[EventType], object],
+    to_calendar_item: Callable[[EventType, bool], object],
 ) -> tuple[list, str, list[str]]:
     """Load calendar items trying field profiles from full to minimal."""
     warnings: list[str] = []
@@ -92,8 +92,10 @@ def fetch_calendar_view_events(
             )
             query_set = query_set[: max(1, min(limit, 500))]
             raw_events = list(query_set)
+            attendees_loaded = profile_name == "full"
             return [
-                to_calendar_item(event) for event in raw_events
+                to_calendar_item(event, attendees_loaded)
+                for event in raw_events
             ], profile_name, warnings
         except Exception as exc:
             if is_unsupported_calendar_field_error(exc):

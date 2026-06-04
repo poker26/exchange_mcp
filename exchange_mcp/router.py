@@ -26,6 +26,7 @@ from .backends.base import (
     CalendarEventDetail,
     CalendarItem,
     CalendarUpdateError,
+    CreateCalendarEventResult,
     ContactItem,
     FolderInfo,
     MailItem,
@@ -354,8 +355,9 @@ class MailRouter:
         location: str = "",
         body: str = "",
         attendees: Optional[list[str]] = None,
-    ) -> tuple[CalendarItem, str]:
-        def _create(ews: EWSBackend) -> CalendarItem:
+        send_meeting_invitations: str = "to_all",
+    ) -> tuple[CreateCalendarEventResult, str]:
+        def _create(ews: EWSBackend) -> CreateCalendarEventResult:
             return ews.create_calendar_event(
                 subject=subject,
                 start=start,
@@ -363,10 +365,11 @@ class MailRouter:
                 location=location,
                 body=body,
                 attendees=attendees,
+                send_meeting_invitations=send_meeting_invitations,
             )
 
-        item, _backend = self._execute("create_calendar_event", _create)
-        return item, "ews"
+        result, _backend = self._execute("create_calendar_event", _create)
+        return result, "ews"
 
     def get_email(self, item_id: str) -> tuple[MailItem, str]:
         def _fetch(ews: EWSBackend) -> MailItem:

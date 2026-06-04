@@ -90,7 +90,7 @@ Per-attendee проблемы — в `errors[]`, запрос не падает 
 
 | Инструмент | Роль |
 | --- | --- |
-| `exchange_create_event` | Создать встречу с `attendees` после выбора слота |
+| `exchange_create_event` | Создать встречу; при `attendees` по умолчанию рассылает meeting request (`to_all`). Проверка: `get_event` → `is_meeting: true` |
 | `exchange_update_event` | Перенести встречу (`start`/`end` в ISO) |
 | `exchange_get_calendar` | Детали **календаря организатора** (тема, тело); не заменяет free/busy коллег |
 
